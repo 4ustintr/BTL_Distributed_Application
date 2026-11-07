@@ -1,7 +1,8 @@
 """Tách file Markdown xuất từ Google Docs thành các file trong docs/.
 
 Cách dùng: python scripts/sync_docs.py <file_xuat_tu_google_docs.md>
-Google Docs: File -> Tải xuống -> Markdown (.md). Kiểm tra file tải về có đủ mọi thẻ.
+Google Docs: File -> Tải xuống -> Markdown (.md).
+Kiểm tra file tải về có đủ mọi thẻ.
 """
 import re
 import sys
@@ -28,7 +29,8 @@ def code_tables_to_fences(text: str) -> str:
     while i < len(lines):
         ln = lines[i]
         nxt = lines[i + 1] if i + 1 < len(lines) else ""
-        if ln.startswith("| ") and ln.rstrip().endswith(" |") and re.fullmatch(r"\|\s*:?-+:?\s*\|", nxt.strip()):
+        is_cell = ln.startswith("| ") and ln.rstrip().endswith(" |")
+        if is_cell and re.fullmatch(r"\|\s*:?-+:?\s*\|", nxt.strip()):
             body = ln.strip()[1:-1].strip()
             body = re.sub(r"\\(.)", r"\1", body)
             out += ["```text", body, "```"]
@@ -51,13 +53,15 @@ def main(src: str) -> None:
     docs = Path(__file__).resolve().parent.parent / "docs"
     docs.mkdir(exist_ok=True)
     found = []
-    for title, body in zip(parts[1::2], parts[2::2]):
+    for title, body in zip(parts[1::2], parts[2::2], strict=False):
         name = SECTIONS.get(title.strip())
         if not name:
             continue
         content = f"# {title.strip()}\n{code_tables_to_fences(body)}".rstrip() + "\n"
-        header = ("<!-- File sinh tự động từ Google Docs bằng scripts/sync_docs.py. "
-                  "Không sửa tay: sửa Google Docs rồi chạy lại script. -->\n\n")
+        header = (
+            "<!-- File sinh tự động từ Google Docs bằng scripts/sync_docs.py. "
+            "Không sửa tay: sửa Google Docs rồi chạy lại script. -->\n\n"
+        )
         (docs / name).write_text(header + content, encoding="utf-8")
         found.append(name)
     missing = sorted(set(SECTIONS.values()) - set(found))
