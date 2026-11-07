@@ -1,7 +1,4 @@
-<!-- File sinh tự động từ Google Docs bằng scripts/sync_docs.py. Không sửa tay: sửa Google Docs rồi chạy lại script. -->
-
 # Giải pháp phân tán
-
 
 ## 1\. Tại sao hệ thống cần phân tán?
 
