@@ -1,0 +1,160 @@
+# Máy B (3 kho) – spec F1, F2. Chạy từ gốc repo: make up-dc
+#   docker compose --env-file .env -f infra/compose.dc.yml up -d --build
+# Biến lấy từ .env ở gốc repo: HOST_A_IP, HOST_B_IP, INTERNAL_KEY, POSTGRES_PASSWORD, LOCK_MODE.
+name: btl-dc
+
+x-pg-dc: &pg-dc
+  image: postgres:16
+  command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+  restart: unless-stopped
+
+x-node-api: &node-api
+  build:
+    context: ..
+    dockerfile: node-api/Dockerfile
+  image: btl/node-api
+  restart: unless-stopped
+
+x-node-env: &node-env
+  HOST_A_IP: ${HOST_A_IP:?Thieu HOST_A_IP trong .env}
+  HOST_B_IP: ${HOST_B_IP:?Thieu HOST_B_IP trong .env}
+  INTERNAL_KEY: ${INTERNAL_KEY:?Thieu INTERNAL_KEY trong .env}
+  HQ_URL: http://${HOST_A_IP}:8000
+  LOCK_MODE: ${LOCK_MODE:-optimistic}
+
+x-wms: &wms
+  image: nginx:1.27-alpine
+  entrypoint: ["/bin/sh", "/opt/gen-config.sh"]
+  volumes:
+    - ../wms:/usr/share/nginx/html:ro
+    - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    - ./nginx/gen-config.sh:/opt/gen-config.sh:ro
+  restart: unless-stopped
+
+x-pg-healthcheck: &pg-healthcheck
+  interval: 5s
+  timeout: 3s
+  retries: 30
+
+services:
+  # ---- CSDL kho (dbname dc1, dc2, dc3) -------------------------------------------------------
+  pg-dc1:
+    <<: *pg-dc
+    container_name: pg-dc1
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Thieu POSTGRES_PASSWORD trong .env}
+      DC_ID: 1
+    ports: ["5433:5432"]
+    volumes:
+      - pg-dc1-data:/var/lib/postgresql/data
+      - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./postgres/init-dc.sh:/docker-entrypoint-initdb.d/10-init-dc.sh:ro
+      - ../db/migrations:/migrations:ro
+    healthcheck:
+      <<: *pg-healthcheck
+      test: ["CMD", "pg_isready", "-h", "localhost", "-U", "postgres", "-d", "dc1"]
+
+  pg-dc2:
+    <<: *pg-dc
+    container_name: pg-dc2
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Thieu POSTGRES_PASSWORD trong .env}
+      DC_ID: 2
+    ports: ["5434:5432"]
+    volumes:
+      - pg-dc2-data:/var/lib/postgresql/data
+      - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./postgres/init-dc.sh:/docker-entrypoint-initdb.d/10-init-dc.sh:ro
+      - ../db/migrations:/migrations:ro
+    healthcheck:
+      <<: *pg-healthcheck
+      test: ["CMD", "pg_isready", "-h", "localhost", "-U", "postgres", "-d", "dc2"]
+
+  pg-dc3:
+    <<: *pg-dc
+    container_name: pg-dc3
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Thieu POSTGRES_PASSWORD trong .env}
+      DC_ID: 3
+    ports: ["5435:5432"]
+    volumes:
+      - pg-dc3-data:/var/lib/postgresql/data
+      - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+      - ./postgres/init-dc.sh:/docker-entrypoint-initdb.d/10-init-dc.sh:ro
+      - ../db/migrations:/migrations:ro
+    healthcheck:
+      <<: *pg-healthcheck
+      test: ["CMD", "pg_isready", "-h", "localhost", "-U", "postgres", "-d", "dc3"]
+
+  # ---- Node API (trong container nghe 8000; máy B mở 8001..8003) ------------------------------
+  node-api-dc1:
+    <<: *node-api
+    container_name: node-api-dc1
+    depends_on:
+      pg-dc1:
+        condition: service_healthy
+    environment:
+      <<: *node-env
+      DC_ID: 1
+      NODE_DB_URL: postgresql://node_app:${POSTGRES_PASSWORD}@pg-dc1:5432/dc1
+    ports: ["8001:8000"]
+
+  node-api-dc2:
+    <<: *node-api
+    container_name: node-api-dc2
+    depends_on:
+      pg-dc2:
+        condition: service_healthy
+    environment:
+      <<: *node-env
+      DC_ID: 2
+      NODE_DB_URL: postgresql://node_app:${POSTGRES_PASSWORD}@pg-dc2:5432/dc2
+    ports: ["8002:8000"]
+
+  node-api-dc3:
+    <<: *node-api
+    container_name: node-api-dc3
+    depends_on:
+      pg-dc3:
+        condition: service_healthy
+    environment:
+      <<: *node-env
+      DC_ID: 3
+      NODE_DB_URL: postgresql://node_app:${POSTGRES_PASSWORD}@pg-dc3:5432/dc3
+    ports: ["8003:8000"]
+
+  # ---- WMS (nginx, config.js sinh từ DC_ID, NODE_URL, HQ_URL) --------------------------------
+  wms-dc1:
+    <<: *wms
+    container_name: wms-dc1
+    environment:
+      DC_ID: 1
+      NODE_URL: http://${HOST_B_IP}:8001
+      HQ_URL: http://${HOST_A_IP}:8000
+    ports: ["3001:80"]
+
+  wms-dc2:
+    <<: *wms
+    container_name: wms-dc2
+    environment:
+      DC_ID: 2
+      NODE_URL: http://${HOST_B_IP}:8002
+      HQ_URL: http://${HOST_A_IP}:8000
+    ports: ["3002:80"]
+
+  wms-dc3:
+    <<: *wms
+    container_name: wms-dc3
+    environment:
+      DC_ID: 3
+      NODE_URL: http://${HOST_B_IP}:8003
+      HQ_URL: http://${HOST_A_IP}:8000
+    ports: ["3003:80"]
+
+volumes:
+  pg-dc1-data:
+  pg-dc2-data:
+  pg-dc3-data:

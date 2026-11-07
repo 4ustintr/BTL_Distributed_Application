@@ -1,0 +1,5 @@
+# Script và cấu hình chạy trong container Linux: luôn LF (core.autocrlf=true trên Windows sẽ làm hỏng CRLF).
+*.sh    text eol=lf
+*.conf  text eol=lf
+*.yml   text eol=lf
+*.json  text eol=lf
