@@ -59,6 +59,9 @@ curl localhost:3001/config.js                             # DC_ID, NODE_URL, HQ_
 
 Kafka UI: http://localhost:8080.
 
+Kafka có hai listener: container dùng `kafka:9092`; công cụ chạy trên máy host (pytest, bench-cdc)
+dùng `localhost:29092` hoặc `HOST_A_IP:29092` (listener EXTERNAL, quảng bá `HOST_A_IP:29092`).
+
 ## 4. Thành phần
 
 | File | Nội dung |

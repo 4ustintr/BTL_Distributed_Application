@@ -26,7 +26,7 @@ Ngoài các cơ chế trên, kiến trúc còn những giới hạn chung, đã 
 * Kafka chỉ có 1 broker, replication factor 1\.  
 * Phân vùng mạng có thể làm hai nơi cùng nhận ghi cho một kho; chỉ phát hiện lúc đẩy lại (REJECTED).  
 * Không hỗ trợ xuất thiếu, nhận thiếu.  
-* Bảo mật tối giản: một khóa nội bộ dùng chung, chưa có TLS.
+* Bảo mật tối giản: một khóa nội bộ dùng chung, chưa có TLS; pg\_hba cho phép mọi địa chỉ (bắt buộc scram-sha-256), vì Docker Desktop đi qua NAT.
 
 ## 3\. Thứ tự phát triển đề xuất
 
