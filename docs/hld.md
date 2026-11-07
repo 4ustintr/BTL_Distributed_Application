@@ -1,11 +1,8 @@
-<!-- File sinh tự động từ Google Docs bằng scripts/sync_docs.py. Không sửa tay: sửa Google Docs rồi chạy lại script. -->
-
 # HLD
 
+Nhóm tự vẽ lại hình HLD trên draw.io theo các yêu cầu dưới đây rồi lưu thành docs/hld.png. Tên thành phần, container, cổng và kênh trao đổi trên hình phải khớp với thẻ Đặc tả kỹ thuật.
 
-Nhóm tự vẽ lại hình HLD trên draw.io theo các yêu cầu dưới đây rồi dán vào thẻ này. Tên thành phần, container, cổng và kênh trao đổi trên hình phải khớp với thẻ Đặc tả kỹ thuật.
-
-(xem hình trong thư mục docs/)
+![HLD](hld.png)
 
 ## 1\. Yêu cầu khi vẽ lại hình chính
 
@@ -42,12 +39,54 @@ Dựng hai sơ đồ tuần tự trên draw.io (Arrange → Insert → Advanced 
 
 Kịch bản 1:
 
-```text
-sequenceDiagram   participant D as Dashboard   participant H as HQ API   participant B as Node Bắc   participant N as Node Nam   D->>H: POST /transfers (Bắc->Nam, 50)   H->>H: transfer_summary CREATED   H->>B: Transfer Notice   B->>B: giữ chỗ 50   B-->>H: 200   H->>N: Transfer Notice   N-->>H: 200, phiếu INBOUND CREATED   Note over B: Bước 2: 2 lệnh xuất 30 chạy song song, 1 thắng   Note over B: WMS Bắc bấm Xuất   B->>B: tồn 70->20, SHIPPED, ghi outbox   B->>H: /transfers/{id}/shipped   H->>H: SHIPPED   H->>N: /sync-status SHIPPED   Note over N: WMS Nam bấm Nhận   Note over N: kiểm tra phiếu đã SHIPPED   N->>N: tồn 10->60, RECEIVED, ghi outbox   N->>H: /transfers/{id}/received   H->>H: RECEIVED   H->>B: /sync-status RECEIVED
+```mermaid
+sequenceDiagram
+  participant D as Dashboard
+  participant H as HQ API
+  participant B as Node Bắc
+  participant N as Node Nam
+  D->>H: POST /transfers (Bắc->Nam, 50)
+  H->>H: transfer_summary CREATED
+  H->>B: Transfer Notice
+  B->>B: giữ chỗ 50
+  B-->>H: 200
+  H->>N: Transfer Notice
+  N-->>H: 200, phiếu INBOUND CREATED
+  Note over B: Bước 2: 2 lệnh xuất 30 chạy song song, 1 thắng
+  Note over B: WMS Bắc bấm Xuất
+  B->>B: tồn 70->20, SHIPPED, ghi outbox
+  B->>H: /transfers/{id}/shipped
+  H->>H: SHIPPED
+  H->>N: /sync-status SHIPPED
+  Note over N: WMS Nam bấm Nhận
+  Note over N: kiểm tra phiếu đã SHIPPED
+  N->>N: tồn 10->60, RECEIVED, ghi outbox
+  N->>H: /transfers/{id}/received
+  H->>H: RECEIVED
+  H->>B: /sync-status RECEIVED
 ```
 
 Kịch bản 3:
 
-```text
-sequenceDiagram   participant W as WMS Trung   participant H as HQ API   participant T as Node Trung   participant C as CDC + Consumer   Note over T: docker kill   W->>T: GET /health (lỗi 2 lần)   W->>H: POST /failover/dc/2/inbound (30)   H->>H: kiểm tra OFFLINE, ghi pending_txn   W->>H: POST /failover/dc/2/outbound (10)   H->>H: khả dụng tạm tính 65 >= 10, ghi pending_txn   Note over T: docker start, chế độ RECOVERING   H->>T: GET /health -> RECOVERING   H->>T: POST /replay (nhập 30)   T->>C: InventoryChanged, request_id 1   H->>T: POST /replay (xuất 10)   T->>C: InventoryChanged, request_id 2   C->>H: snapshot 35 -> 65 -> 55, pending APPLIED   H->>T: POST /recovery/complete   T-->>W: ONLINE, WMS quay về Node API
+```mermaid
+sequenceDiagram
+  participant W as WMS Trung
+  participant H as HQ API
+  participant T as Node Trung
+  participant C as CDC + Consumer
+  Note over T: docker kill
+  W->>T: GET /health (lỗi 2 lần)
+  W->>H: POST /failover/dc/2/inbound (30)
+  H->>H: kiểm tra OFFLINE, ghi pending_txn
+  W->>H: POST /failover/dc/2/outbound (10)
+  H->>H: khả dụng tạm tính 65 >= 10, ghi pending_txn
+  Note over T: docker start, chế độ RECOVERING
+  H->>T: GET /health -> RECOVERING
+  H->>T: POST /replay (nhập 30)
+  T->>C: InventoryChanged, request_id 1
+  H->>T: POST /replay (xuất 10)
+  T->>C: InventoryChanged, request_id 2
+  C->>H: snapshot 35 -> 65 -> 55, pending APPLIED
+  H->>T: POST /recovery/complete
+  T-->>W: ONLINE, WMS quay về Node API
 ```
