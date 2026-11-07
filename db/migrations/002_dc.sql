@@ -158,6 +158,9 @@ CREATE TABLE outbox_event (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Publication cho Debezium (F3, F4): chỉ chủ bảng tạo được, connector dùng autocreate disabled.
+CREATE PUBLICATION dbz_outbox FOR TABLE outbox_event;
+
 -- ---------------------------------------------------------------------------
 -- Role và quyền (F3; db.md 2.3, 2.8, 3.3)
 -- ---------------------------------------------------------------------------
