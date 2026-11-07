@@ -1,7 +1,4 @@
-<!-- File sinh tự động từ Google Docs bằng scripts/sync_docs.py. Không sửa tay: sửa Google Docs rồi chạy lại script. -->
-
 # Hạn chế và hướng phát triển
-
 
 Thẻ này gom các phần nhóm chủ động lược bỏ để bản nộp vừa sức, cùng các giới hạn còn lại của kiến trúc. Mọi mục dưới đây không ảnh hưởng tới 3 kịch bản demo; chúng là hướng phát triển khi muốn đưa hệ thống gần với vận hành thật hơn.
 

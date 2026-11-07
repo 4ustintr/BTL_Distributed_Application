@@ -1,7 +1,4 @@
-<!-- File sinh tự động từ Google Docs bằng scripts/sync_docs.py. Không sửa tay: sửa Google Docs rồi chạy lại script. -->
-
 # Phân công và kế hoạch
-
 
 Thẻ này là cam kết làm việc của nhóm trong 7 ngày: ai làm gì, mỗi ngày phải xong gì, và các quy tắc bắt buộc khi dùng AI sinh code. Mỗi người sở hữu trọn một mảng gồm lý thuyết, code, test và phần trình bày khi demo. Mọi thành viên đọc thẻ này cùng thẻ Đặc tả kỹ thuật trước khi viết dòng code đầu tiên.
 
@@ -37,14 +34,51 @@ AI chỉ sinh code đúng khi cả nhóm cho nó cùng một nguồn sự thật
 
 ### 3.1. Một nguồn sự thật trong repo
 
-* Ngày 1, trưởng nhóm xuất các thẻ Thiết kế CSDL, Đặc tả kỹ thuật, Kịch bản demo, Kiểm thử và đánh giá ra docs/db.md, docs/spec.md, docs/demo.md, docs/tests.md trong repo. File Google Docs là bản để người đọc; docs/ trong repo là bản AI đọc. Hai bản luôn giống nhau.  
-* Muốn đổi hợp đồng (tên cột, endpoint, mã lỗi, payload sự kiện, tham số): mở pull request sửa docs/ trước, trưởng nhóm duyệt và cập nhật Google Docs, rồi mới sửa code. Không ai sửa code trước rồi "sẽ cập nhật tài liệu sau".  
+* Thư mục docs/ trong repo (docs/spec.md, docs/db.md, docs/demo.md, docs/tests.md và các file còn lại) là nguồn sự thật duy nhất cho cả người và AI.  
+* Muốn đổi hợp đồng (tên cột, endpoint, mã lỗi, payload sự kiện, tham số): đề xuất cho trưởng nhóm; trưởng nhóm sửa docs/ bằng lệnh /doc-change và merge trước, rồi mới sửa code. Không ai sửa code trước rồi "sẽ cập nhật tài liệu sau".  
 * Mọi hằng số dùng chung nằm trong common/: tên topic, mã lỗi, trạng thái, tham số F11, model Pydantic cho request, response và payload sự kiện. Code không viết chuỗi trực tiếp như "PENDING" hay "outbox.event.INVENTORY".
 
 ### 3.2. File CLAUDE.md ở gốc repo
 
-```text
-# Quy tắc cho AI trong repo BTL kho phân tán ## Nguồn sự thật - docs/spec.md, docs/db.md, docs/tests.md, docs/demo.md là chuẩn.   Mâu thuẫn thì theo thứ tự: spec.md > db.md > demo.md. - Không tự đặt tên bảng, cột, endpoint, mã lỗi, sự kiện, topic.   Thiếu thông tin thì dừng và hỏi, không đoán. - Không thêm thư viện ngoài danh sách spec F1. ## Phạm vi sửa - Chỉ sửa file trong phạm vi ghi ở prompt.   Cần đổi chỗ khác thì dừng lại và ghi đề xuất. - Không sửa db/migrations đã có; đổi schema = file migration mới. - Không sửa common/ và docs/; cần thêm thì đề xuất. ## Quy tắc nghiệp vụ không được vi phạm - Mọi lệnh ghi ở kho chạy trong một transaction, bắt đầu bằng   SET LOCAL app.source = 'api', đúng thứ tự bước của spec F10. - Kiểm tra trùng request_id TRƯỚC khi trừ kho;   ON CONFLICT chỉ là chốt chặn cuối. - Ghi outbox_event trong cùng transaction với thay đổi tồn kho.   Không gọi HTTP bên trong transaction. - Không tự tăng version (trigger làm việc đó).   UPDATE inventory luôn có điều kiện version và khả dụng. - Trạng thái chỉ đi tới: UPDATE ... WHERE status = trạng thái liền trước. - Consumer: processed_event và cập nhật snapshot trong một transaction;   chỉ áp dụng khi version > last_version;   commit offset Kafka sau khi commit CSDL. - Không dùng thời gian thực để sắp thứ tự sự kiện. ## Cách làm - Viết hoặc cập nhật test trong tests/ trước, đúng ID và assert   ở docs/tests.md, rồi mới viết code. - Dùng hằng số và model trong common/, không viết chuỗi trực tiếp. - Lỗi trả theo dạng {error_code, message, details} của spec F5. - Gọi service khác bằng client có timeout và thử lại trong common/. - Python 3.11, FastAPI, asyncpg, httpx; có type hint; định dạng bằng ruff. - Kết thúc mỗi việc: chạy pytest phần liên quan và báo kết quả.
+```markdown
+# Quy tắc cho AI trong repo BTL kho phân tán
+
+## Nguồn sự thật
+- docs/spec.md, docs/db.md, docs/tests.md, docs/demo.md là chuẩn.
+  Mâu thuẫn thì theo thứ tự: spec.md > db.md > demo.md.
+- Không tự đặt tên bảng, cột, endpoint, mã lỗi, sự kiện, topic.
+  Thiếu thông tin thì dừng và hỏi, không đoán.
+- Không thêm thư viện ngoài danh sách spec F1.
+
+## Phạm vi sửa
+- Chỉ sửa file trong phạm vi ghi ở prompt.
+  Cần đổi chỗ khác thì dừng lại và ghi đề xuất.
+- Không sửa db/migrations đã có; đổi schema = file migration mới.
+- Không sửa common/ và docs/; cần thêm thì đề xuất.
+
+## Quy tắc nghiệp vụ không được vi phạm
+- Mọi lệnh ghi ở kho chạy trong một transaction, bắt đầu bằng
+  SET LOCAL app.source = 'api', đúng thứ tự bước của spec F10.
+- Kiểm tra trùng request_id TRƯỚC khi trừ kho;
+  ON CONFLICT chỉ là chốt chặn cuối.
+- Ghi outbox_event trong cùng transaction với thay đổi tồn kho.
+  Không gọi HTTP bên trong transaction.
+- Không tự tăng version (trigger làm việc đó).
+  UPDATE inventory luôn có điều kiện version và khả dụng.
+- Trạng thái chỉ đi tới: UPDATE ... WHERE status = trạng thái liền trước.
+- Consumer: processed_event và cập nhật snapshot trong một transaction;
+  chỉ áp dụng khi version > last_version;
+  commit offset Kafka sau khi commit CSDL.
+- Không dùng thời gian thực để sắp thứ tự sự kiện.
+
+## Cách làm
+- Viết hoặc cập nhật test trong tests/ trước, đúng ID và assert
+  ở docs/tests.md, rồi mới viết code.
+- Dùng hằng số và model trong common/, không viết chuỗi trực tiếp.
+- Lỗi trả theo dạng {error_code, message, details} của spec F5.
+- Gọi service khác bằng client có timeout và thử lại trong common/.
+- Python 3.11, FastAPI, asyncpg, httpx; có type hint; định dạng bằng ruff.
+- Kết thúc mỗi việc: chạy pytest phần liên quan và báo kết quả.
 ```
 
 Mỗi thư mục service có thêm một CLAUDE.md ngắn ghi phạm vi của thư mục đó. Ví dụ node-api/CLAUDE.md liệt kê các mục F6, F10.a–e và các hàm dùng chung trong services/stock.py; consumer/CLAUDE.md trỏ tới Thiết kế CSDL mục 3.4 và F8.
@@ -58,15 +92,20 @@ Mỗi thư mục service có thêm một CLAUDE.md ngắn ghi phạm vi của th
 * Sau khi AI viết xong, yêu cầu nó tự đối chiếu với checklist ở mục 3.5 và chỉ ra dòng code ứng với từng ý. Mẫu prompt dùng chung:
 
 ```text
-Bối cảnh: đọc CLAUDE.md, docs/spec.md mục <Fx>, docs/db.md mục <2.x>. Việc: viết <endpoint hoặc hàm> theo đúng <F10.x>, giữ đúng thứ tự các bước. Phạm vi: chỉ sửa <danh sách file>. Cần sửa file khác thì dừng và đề xuất. Test: viết trước test <TCxx> theo docs/tests.md, chạy cho tới khi xanh. Trước khi code: liệt kê giả định và các điểm spec chưa rõ. Sau khi code: đối chiếu checklist mục 3.5, chỉ ra dòng code ứng với từng ý.
+Bối cảnh: đọc CLAUDE.md, docs/spec.md mục <Fx>, docs/db.md mục <2.x>.
+Việc: viết <endpoint hoặc hàm> theo đúng <F10.x>, giữ đúng thứ tự các bước.
+Phạm vi: chỉ sửa <danh sách file>. Cần sửa file khác thì dừng và đề xuất.
+Test: viết trước test <TCxx> theo docs/tests.md, chạy cho tới khi xanh.
+Trước khi code: liệt kê giả định và các điểm spec chưa rõ.
+Sau khi code: đối chiếu checklist mục 3.5, chỉ ra dòng code ứng với từng ý.
 ```
 
 ### 3.4. Quy trình Git
 
-* Nhánh main được bảo vệ, không ai push thẳng. Mọi thay đổi đi qua pull request; tên nhánh theo dạng \<vai\>/\<việc\>, ví dụ saga/f10-ship, cdc/consumer-version.  
+* Nhánh master được bảo vệ, không ai push thẳng. Mọi thay đổi đi qua pull request; tên nhánh theo dạng \<tên\>/\<vai\>/\<việc\>, ví dụ danh/infra/base, tuanminh/kho/outbound, hieu/saga/ship, chung/cdc/consumer, khanh/failover/replay.  
 * File CODEOWNERS gán chủ cho từng thư mục theo bảng mục 1; pull request đụng thư mục của người khác cần người đó duyệt. db/, common/, docs/ chỉ trưởng nhóm merge.  
 * Pull request nhỏ: một mục spec, khoảng dưới 400 dòng. Mô tả ghi rõ mục spec (ví dụ F10.c) và ID test liên quan.  
-* Rebase theo main trước khi mở pull request; xung đột ở file của người khác thì hỏi chủ file, không để AI tự giải quyết.  
+* Rebase theo master trước khi mở pull request; xung đột ở file của người khác thì hỏi chủ file, không để AI tự giải quyết.  
 * CI (GitHub Actions) chạy ruff và các test không cần hai máy cho mọi pull request; CI đỏ thì không merge.
 
 ### 3.5. Checklist duyệt pull request

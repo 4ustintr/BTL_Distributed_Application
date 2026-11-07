@@ -32,7 +32,8 @@ kho sập thì WMS ghi hộ qua HQ (pending_txn) rồi Replay Worker đẩy lạ
 - Chỉ sửa file trong phạm vi ghi ở prompt. Cần sửa chỗ khác thì dừng và ghi đề xuất.
 - Không sửa `db/migrations/` đã merge; đổi schema = file migration mới, đánh số tiếp theo.
 - Không sửa `common/` và `docs/`; cần thêm thì đề xuất cho Minh Danh.
-- `docs/` sinh tự động từ Google Docs bằng `scripts/sync_docs.py`, không sửa tay.
+- `docs/` là bản gốc; chỉ sửa khi prompt yêu cầu rõ, bằng lệnh `/doc-change`; mọi thay đổi phải
+  nhất quán giữa các file `docs/`.
 
 ## Quy tắc nghiệp vụ không được vi phạm
 - Mọi lệnh ghi ở kho chạy trong một transaction, bắt đầu bằng `SET LOCAL app.source = 'api'`,
@@ -56,4 +57,4 @@ kho sập thì WMS ghi hộ qua HQ (pending_txn) rồi Replay Worker đẩy lạ
 - Python 3.11, async, có type hint, định dạng bằng ruff (line-length 100).
 - Kết thúc mỗi việc: chạy pytest phần liên quan, báo kết quả, liệt kê giả định còn mở.
 
-Tài liệu gốc (bản người đọc): https://docs.google.com/document/d/19rYYpcJDy31dYiV4I0HSz2jq6s84ijCzqlsqEDfcHc0/edit
+Bản báo cáo để nộp (không phải nguồn sự thật): https://docs.google.com/document/d/19rYYpcJDy31dYiV4I0HSz2jq6s84ijCzqlsqEDfcHc0/edit
