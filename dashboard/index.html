@@ -1,0 +1,16 @@
+<!doctype html>
+<!-- Trang tạm do infra dựng; Ngọc Chung thay bằng Dashboard thật. -->
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>Dashboard HQ</title>
+  <script src="config.js"></script>
+</head>
+<body>
+  <h1>Dashboard HQ</h1>
+  <p>Trang tạm. Cấu hình: <code id="cfg"></code></p>
+  <script>
+    document.getElementById("cfg").textContent = JSON.stringify(window.CONFIG);
+  </script>
+</body>
+</html>

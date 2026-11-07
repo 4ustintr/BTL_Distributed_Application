@@ -1,0 +1,30 @@
+{
+  "name": "dc3-outbox",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "plugin.name": "pgoutput",
+    "database.hostname": "${HOST_B_IP}",
+    "database.port": "5435",
+    "database.user": "debezium",
+    "database.password": "${POSTGRES_PASSWORD}",
+    "database.dbname": "dc3",
+    "topic.prefix": "dc3",
+    "slot.name": "debezium_dc3",
+    "publication.name": "dbz_outbox",
+    "publication.autocreate.mode": "disabled",
+    "table.include.list": "public.outbox_event",
+    "tombstones.on.delete": "false",
+    "transforms": "outbox",
+    "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+    "transforms.outbox.table.field.event.id": "event_id",
+    "transforms.outbox.table.field.event.key": "aggregate_id",
+    "transforms.outbox.table.field.event.payload": "payload",
+    "transforms.outbox.route.by.field": "aggregate_type",
+    "transforms.outbox.route.topic.replacement": "outbox.event.${routedByValue}",
+    "transforms.outbox.table.expand.json.payload": "true",
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+    "errors.max.retries": "3"
+  }
+}
