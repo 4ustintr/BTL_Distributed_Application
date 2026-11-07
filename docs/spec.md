@@ -55,7 +55,7 @@ max_slot_wal_keep_size = 2GB   # chặn đầy đĩa khi connector hoặc kho d�
 | hq\_db | hq\_app | Ứng dụng HQ API và Consumer |
 | hq\_db | repl\_sub | LOGIN REPLICATION, SELECT trên dc, product\_category, product; dùng cho subscription của 3 kho |
 | dcX | node\_app | SELECT trên bản sao danh mục; SELECT, INSERT, UPDATE trên inventory, transfer\_order, transfer\_item; SELECT, INSERT trên stock\_movement, outbox\_event |
-| dcX | debezium | LOGIN REPLICATION, SELECT trên outbox\_event |
+| dcX | debezium | LOGIN REPLICATION, SELECT trên outbox\_event; dùng publication dbz\_outbox có sẵn, không tự tạo |
 | dcX | fdw\_reader | SELECT trên inventory, stock\_movement, transfer\_order, transfer\_item |
 
 Logical replication danh mục. Mỗi subscription phải có slot riêng trên HQ, nếu không cả 3 kho cùng tên slot sub\_master và kho thứ hai sẽ bị từ chối:
@@ -69,6 +69,13 @@ CREATE SUBSCRIPTION sub_master
   CONNECTION 'host=HOST_A_IP port=5432 dbname=hq_db user=repl_sub password=***'
   PUBLICATION pub_master
   WITH (slot_name = 'sub_master_dc1');
+```
+
+Publication cho Debezium. PostgreSQL chỉ cho chủ bảng (hoặc superuser) tạo publication, nên role debezium không tự tạo được. Migration 002 tạo sẵn publication này ở mỗi CSDL kho, ngay sau bảng outbox\_event:
+
+```sql
+-- Trên dc1, dc2, dc3
+CREATE PUBLICATION dbz_outbox FOR TABLE outbox_event;
 ```
 
 FDW từ HQ tới kho:
@@ -95,7 +102,7 @@ HQ API chạy 3 truy vấn FDW song song trên 3 kết nối riêng trong pool, 
 
 ## F4. Cấu hình Debezium connector
 
-Mẫu cho kho Trung; hai kho còn lại đổi tên, cổng, dbname, slot.name, publication.name và topic.prefix.
+Mẫu cho kho Trung; hai kho còn lại đổi tên, cổng, dbname, slot.name và topic.prefix; publication.name giữ nguyên dbz\_outbox ở cả 3 kho.
 
 ```json
 {
@@ -110,8 +117,8 @@ Mẫu cho kho Trung; hai kho còn lại đổi tên, cổng, dbname, slot.name, 
     "database.dbname": "dc2",
     "topic.prefix": "dc2",
     "slot.name": "debezium_dc2",
-    "publication.name": "dbz_outbox_dc2",
-    "publication.autocreate.mode": "filtered",
+    "publication.name": "dbz_outbox",
+    "publication.autocreate.mode": "disabled",
     "table.include.list": "public.outbox_event",
     "tombstones.on.delete": "false",
     "transforms": "outbox",
