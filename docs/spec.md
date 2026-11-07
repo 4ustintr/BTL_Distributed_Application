@@ -12,7 +12,7 @@ Thẻ này là hợp đồng kỹ thuật cho cả nhóm và cho công cụ sinh
 | Giao diện Kafka | Kafka UI | Bản ổn định mới nhất | Xem connector, topic, consumer lag |
 | HQ API, Node API | Python, FastAPI, asyncpg, httpx | Python 3.11 | Mỗi API một service riêng |
 | CDC Consumer | Python, confluent-kafka, asyncpg | Python 3.11 | Tắt tự commit offset |
-| Dashboard, WMS | HTML, CSS, JavaScript thuần (không cần build), phục vụ bằng nginx; dùng chung cho Dashboard và WMS |  | Chỉ gọi API bằng fetch, không truy cập CSDL; địa chỉ API đặt trong config.js của từng container |
+| Dashboard, WMS | HTML, CSS, JavaScript thuần (không cần build), phục vụ bằng nginx; dùng chung cho Dashboard và WMS |  | Chỉ gọi API bằng fetch, không truy cập CSDL; địa chỉ API đặt trong config.js của từng container; config.js đặt window.CONFIG \= {HQ\_URL, NODE\_URL, DC\_ID}; NODE\_URL và DC\_ID chỉ có ở WMS |
 | Triển khai | Docker Compose |  | compose.hq.yml cho máy A, compose.dc.yml cho máy B |
 
 ## F2. Bố trí máy, container và cổng
@@ -22,7 +22,7 @@ Thẻ này là hợp đồng kỹ thuật cho cả nhóm và cho công cụ sinh
 | pg-hq | A | 5432 | hq\_db |
 | hq-api | A | 8000 | HQ API, kèm Health Monitor và Replay Worker chạy nền |
 | hq-consumer | A | không mở | CDC Consumer |
-| kafka | A | 9092 | Kafka broker |
+| kafka | A | 9092, 29092 | Kafka broker; 9092 (kafka:9092) cho các container, 29092 là listener ngoài cho công cụ chạy trên máy host (pytest, bench-cdc) |
 | kafka-connect | A | 8083 | Debezium, 3 connector dc1-outbox, dc2-outbox, dc3-outbox |
 | kafka-ui | A | 8080 | Giao diện Kafka |
 | dashboard | A | 3000 | Dashboard HQ |
@@ -37,7 +37,7 @@ Biến môi trường, đặt trong file .env của mỗi máy:
 * HQ API và Consumer: HQ\_DB\_URL, NODE\_URLS \= {"1": "http\://HOST\_B\_IP:8001", "2": "http\://HOST\_B\_IP:8002", "3": "http\://HOST\_B\_IP:8003"}, KAFKA\_BOOTSTRAP \= kafka:9092.  
 * WMS: DC\_ID, NODE\_URL, HQ\_URL.
 
-Mạng: các pg-dc đặt listen\_addresses \= '\*' và pg\_hba.conf cho phép HOST\_A\_IP (FDW, Debezium); pg-hq cho phép HOST\_B\_IP (subscription của 3 kho).
+Mạng: các pg-dc đặt listen\_addresses \= '\*' và pg\_hba.conf cho phép HOST\_A\_IP (FDW, Debezium); pg-hq cho phép HOST\_B\_IP (subscription của 3 kho). Vì Docker Desktop đi qua NAT (địa chỉ nguồn là gateway của Docker), pg\_hba.conf cho phép mọi địa chỉ và bắt buộc scram-sha-256 (xem Hạn chế và hướng phát triển).
 
 ## F3. Cấu hình PostgreSQL
 
