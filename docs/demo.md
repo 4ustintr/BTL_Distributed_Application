@@ -1,7 +1,4 @@
-<!-- File sinh tự động từ Google Docs bằng scripts/sync_docs.py. Không sửa tay: sửa Google Docs rồi chạy lại script. -->
-
 # Kịch bản demo
-
 
 Thứ tự trình bày: so với thứ tự đã báo, nhóm xếp lại để số liệu nối tiếp nhau. Chuyển hàng giữa các kho chạy trước, khi hệ thống còn bình thường. Sau đó kho Trung sập, HQ xem số liệu qua snapshot, rồi giao dịch của kho Trung đi qua trung tâm và được đồng bộ lại khi kho hoạt động trở lại.
 

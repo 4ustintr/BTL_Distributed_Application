@@ -1,7 +1,4 @@
-<!-- File sinh tự động từ Google Docs bằng scripts/sync_docs.py. Không sửa tay: sửa Google Docs rồi chạy lại script. -->
-
 # Tài liệu tham khảo
-
 
 Danh mục ghi theo trí nhớ; nhóm kiểm tra lại năm và nơi xuất bản trước khi nộp.
 

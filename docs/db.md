@@ -1,7 +1,4 @@
-<!-- File sinh tự động từ Google Docs bằng scripts/sync_docs.py. Không sửa tay: sửa Google Docs rồi chạy lại script. -->
-
 # Thiết kế cơ sở dữ liệu
-
 
 ## Phân bố dữ liệu
 
@@ -107,8 +104,15 @@ Bản chụp tồn kho toàn hệ thống, do CDC Consumer ghi. Cột qty\_in\_t
 
 Hàng đang đi đường không lưu trong bảng này mà tính bằng view từ transfer\_summary, để chỉ có một nơi ghi số liệu này:
 
-```text
-CREATE VIEW v_in_transit AS SELECT s.to_dc_id AS dc_id,        (i->>'product_id')::BIGINT AS product_id,        SUM((i->>'qty')::INT) AS qty_in_transit FROM transfer_summary s CROSS JOIN LATERAL jsonb_array_elements(s.items) AS i WHERE s.status = 'SHIPPED' GROUP BY s.to_dc_id, (i->>'product_id')::BIGINT;
+```sql
+CREATE VIEW v_in_transit AS
+SELECT s.to_dc_id AS dc_id,
+       (i->>'product_id')::BIGINT AS product_id,
+       SUM((i->>'qty')::INT) AS qty_in_transit
+FROM transfer_summary s
+CROSS JOIN LATERAL jsonb_array_elements(s.items) AS i
+WHERE s.status = 'SHIPPED'
+GROUP BY s.to_dc_id, (i->>'product_id')::BIGINT;
 ```
 
 Dashboard đọc số tồn kho theo quy tắc sau:
@@ -175,8 +179,32 @@ Tồn kho hiện tại của DC. dc\_id là thuộc tính phân mảnh: mỗi no
 
 Ràng buộc mảnh được sinh theo từng node: script khởi tạo của pg\_dc1 tạo CHECK (dc\_id \= 1), của pg\_dc2 tạo CHECK (dc\_id \= 2), của pg\_dc3 tạo CHECK (dc\_id \= 3). Version bắt đầu từ 1 để sự kiện đầu tiên luôn lớn hơn last\_version mặc định 0 ở HQ. Trigger và lệnh mẫu:
 
-```text
-CREATE FUNCTION bump_version() RETURNS trigger AS $$ BEGIN   NEW.version := OLD.version + 1;   RETURN NEW; END $$ LANGUAGE plpgsql; CREATE TRIGGER trg_inventory_version BEFORE UPDATE ON inventory FOR EACH ROW EXECUTE FUNCTION bump_version(); -- Xuất :qty thùng; :v là version vừa đọc UPDATE inventory SET qty_on_hand = qty_on_hand - :qty, updated_at = now() WHERE dc_id = :dc AND product_id = :p   AND version = :v   AND qty_on_hand - qty_reserved >= :qty RETURNING version, qty_on_hand, qty_reserved; -- Giữ chỗ :qty thùng cho phiếu điều chuyển UPDATE inventory SET qty_reserved = qty_reserved + :qty, updated_at = now() WHERE dc_id = :dc AND product_id = :p   AND version = :v   AND qty_on_hand - qty_reserved >= :qty RETURNING version, qty_on_hand, qty_reserved;
+```sql
+CREATE FUNCTION bump_version() RETURNS trigger AS $$
+BEGIN
+  NEW.version := OLD.version + 1;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_inventory_version
+BEFORE UPDATE ON inventory
+FOR EACH ROW EXECUTE FUNCTION bump_version();
+
+-- Xuất :qty thùng; :v là version vừa đọc
+UPDATE inventory
+SET qty_on_hand = qty_on_hand - :qty, updated_at = now()
+WHERE dc_id = :dc AND product_id = :p
+  AND version = :v
+  AND qty_on_hand - qty_reserved >= :qty
+RETURNING version, qty_on_hand, qty_reserved;
+
+-- Giữ chỗ :qty thùng cho phiếu điều chuyển
+UPDATE inventory
+SET qty_reserved = qty_reserved + :qty, updated_at = now()
+WHERE dc_id = :dc AND product_id = :p
+  AND version = :v
+  AND qty_on_hand - qty_reserved >= :qty
+RETURNING version, qty_on_hand, qty_reserved;
 ```
 
 Lệnh không trả về dòng nào thì đọc lại: version đã khác thì thử lại, tối đa 3 lần; version vẫn như cũ nghĩa là không đủ hàng, trả 422 INSUFFICIENT\_STOCK. Nhập hàng cho SKU chưa có dòng thì dùng INSERT … ON CONFLICT (dc\_id, product\_id) DO UPDATE.
@@ -222,8 +250,11 @@ Một phiếu điều chuyển nằm ở 2 node với cùng transfer\_id do HQ c
 
 Ràng buộc mảnh ở mức bảng (ví dụ cho pg\_dc1, đổi số 1 theo từng node):
 
-```text
-CHECK (   (direction = 'OUTBOUND' AND from_dc_id = 1) OR   (direction = 'INBOUND'  AND to_dc_id   = 1) )
+```sql
+CHECK (
+  (direction = 'OUTBOUND' AND from_dc_id = 1) OR
+  (direction = 'INBOUND'  AND to_dc_id   = 1)
+)
 ```
 
 Kho đích chỉ cho nhận hàng khi bản INBOUND đã SHIPPED; HQ đồng bộ trạng thái này qua /sync-status ngay sau khi kho nguồn xuất hàng. Nếu chưa SHIPPED, trả 409 INVALID\_STATE.
@@ -243,8 +274,9 @@ Chi tiết dòng hàng của phiếu. Bảng đi theo transfer\_order (phân m�
 
 Ràng buộc mức bảng:
 
-```text
-PRIMARY KEY (transfer_id, line_no), UNIQUE (transfer_id, product_id)
+```sql
+PRIMARY KEY (transfer_id, line_no),
+UNIQUE (transfer_id, product_id)
 ```
 
 ### 2.11. Bảng outbox\_event (node DC)
@@ -335,8 +367,14 @@ Bốn quy tắc giữ trạng thái đúng:
 
 Lệnh cập nhật trạng thái theo quy tắc 2:
 
-```text
-UPDATE transfer_summary SET status      = :new,     shipped_at  = COALESCE(shipped_at,  :shipped_at),     received_at = COALESCE(received_at, :received_at),     updated_at  = now() WHERE transfer_id = :id   AND status = :prev_status;  -- trạng thái liền trước
+```sql
+UPDATE transfer_summary
+SET status      = :new,
+    shipped_at  = COALESCE(shipped_at,  :shipped_at),
+    received_at = COALESCE(received_at, :received_at),
+    updated_at  = now()
+WHERE transfer_id = :id
+  AND status = :prev_status;  -- trạng thái liền trước
 ```
 
 ### 3.3. Chịu lỗi khi dữ liệu bị sửa trực tiếp vào CSDL
@@ -359,8 +397,18 @@ Consumer bảo đảm mỗi sự kiện có hiệu quả đúng một lần dù 
 5. Chỉ commit offset Kafka sau khi transaction trên hq\_db commit xong. Consumer chết giữa chừng thì sự kiện được giao lại và bước 2 chặn trùng.  
 6. Sự kiện lỗi không thể thử lại (payload sai định dạng): ghi log, đẩy sang topic outbox.event.DLQ, commit offset để không chặn cả partition.
 
-```text
-INSERT INTO inventory_snapshot AS s   (dc_id, product_id, qty_on_hand, qty_reserved,    last_version, last_event_id, synced_at) VALUES (:dc, :p, :on_hand, :reserved, :version, :event_id, now()) ON CONFLICT (dc_id, product_id) DO UPDATE SET qty_on_hand   = EXCLUDED.qty_on_hand,     qty_reserved  = EXCLUDED.qty_reserved,     last_version  = EXCLUDED.last_version,     last_event_id = EXCLUDED.last_event_id,     synced_at     = now() WHERE s.last_version < EXCLUDED.last_version;
+```sql
+INSERT INTO inventory_snapshot AS s
+  (dc_id, product_id, qty_on_hand, qty_reserved,
+   last_version, last_event_id, synced_at)
+VALUES (:dc, :p, :on_hand, :reserved, :version, :event_id, now())
+ON CONFLICT (dc_id, product_id) DO UPDATE
+SET qty_on_hand   = EXCLUDED.qty_on_hand,
+    qty_reserved  = EXCLUDED.qty_reserved,
+    last_version  = EXCLUDED.last_version,
+    last_event_id = EXCLUDED.last_event_id,
+    synced_at     = now()
+WHERE s.last_version < EXCLUDED.last_version;
 ```
 
 Vì sao so version thay cho thời gian: trong PostgreSQL, now() là thời điểm bắt đầu transaction chứ không phải lúc commit. Transaction bắt đầu trước nhưng commit sau sẽ mang thời điểm nhỏ hơn dù số của nó mới hơn, nên so theo thời gian sẽ bỏ nhầm sự kiện đúng. Version tăng theo thứ tự các lệnh UPDATE trên cùng một dòng, nên luôn phản ánh đúng thứ tự.
@@ -370,7 +418,10 @@ Vì sao so version thay cho thời gian: trong PostgreSQL, now() là thời đi�
 Với i ∈ {1, 2, 3} là mã kho, các mảnh được định nghĩa bằng phép chọn σ và phép nửa kết ⋉:
 
 ```text
-inventory_i      = σ[dc_id = i](inventory) stock_movement_i = σ[dc_id = i](stock_movement) transfer_order_i = σ[(direction = 'OUTBOUND' ∧ from_dc_id = i) ∨ (direction = 'INBOUND' ∧ to_dc_id = i)](transfer_order) transfer_item_i  = transfer_item ⋉[transfer_id] transfer_order_i
+inventory_i      = σ[dc_id = i](inventory)
+stock_movement_i = σ[dc_id = i](stock_movement)
+transfer_order_i = σ[(direction = 'OUTBOUND' ∧ from_dc_id = i) ∨ (direction = 'INBOUND' ∧ to_dc_id = i)](transfer_order)
+transfer_item_i  = transfer_item ⋉[transfer_id] transfer_order_i
 ```
 
 * Đầy đủ: mọi dòng inventory có dc\_id thuộc {1, 2, 3} nhờ khóa ngoại tới dc, nên thuộc ít nhất một mảnh.  
@@ -378,8 +429,13 @@ inventory_i      = σ[dc_id = i](inventory) stock_movement_i = σ[dc_id = i](sto
 * Tách biệt: các mảnh inventory và stock\_movement rời nhau nhờ CHECK (dc\_id \= i). Riêng transfer\_order cố ý không tách biệt theo transfer\_id: mỗi phiếu có 2 bản ở 2 kho, nên khóa của quan hệ toàn cục là (transfer\_id, direction) và phép hợp phải giữ cột direction.  
 * transfer\_item là phân mảnh ngang dẫn xuất: dòng hàng đi theo phiếu mà nó thuộc về, nên khóa ngoại transfer\_item → transfer\_order luôn kiểm tra được trong một node.
 
-```text
-CREATE VIEW v_inventory_all AS SELECT * FROM dc1.inventory UNION ALL SELECT * FROM dc2.inventory UNION ALL SELECT * FROM dc3.inventory;
+```sql
+CREATE VIEW v_inventory_all AS
+SELECT * FROM dc1.inventory
+UNION ALL
+SELECT * FROM dc2.inventory
+UNION ALL
+SELECT * FROM dc3.inventory;
 ```
 
 View này minh họa trong suốt phân mảnh: người dùng truy vấn như một bảng duy nhất. Khi một kho chết, cả câu truy vấn trên view bị lỗi; đó là lý do Dashboard truy vấn từng kho riêng.

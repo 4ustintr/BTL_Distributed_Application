@@ -1,7 +1,4 @@
-<!-- File sinh tự động từ Google Docs bằng scripts/sync_docs.py. Không sửa tay: sửa Google Docs rồi chạy lại script. -->
-
 # Kiểm thử và đánh giá
-
 
 Thẻ này là chuẩn nghiệm thu chung: mọi thành viên viết code phải cho ra đúng các kết quả dưới đây, và một chức năng chỉ coi là xong khi test tương ứng chạy xanh. Khi đầu ra thực tế khác bảng, sửa code chứ không sửa bảng, trừ khi cả nhóm thống nhất và cập nhật đồng thời thẻ Đặc tả kỹ thuật.
 
@@ -34,7 +31,8 @@ Mọi script demo và test dùng chung các mã dưới đây, nên log, Dashboa
 Sau mỗi bước, script demo in một dòng trạng thái theo đúng định dạng dưới đây, lấy từ GET /invariant và GET /dashboard/inventory. Test tự động so khớp với cùng các số trong bảng.
 
 ```text
-[KB1-2] BAC=70/20 TRUNG=40/40 NAM=10/10 TRANSIT=0 SHIPPED_OUT=30 RECEIVED_IN=150 DIFF=0 [KB2-5] BAC=20/20 TRUNG=35/35(offline) NAM=60/60 TRANSIT=0 SHIPPED_OUT=NA RECEIVED_IN=NA DIFF=NA
+[KB1-2] BAC=70/20 TRUNG=40/40 NAM=10/10 TRANSIT=0 SHIPPED_OUT=30 RECEIVED_IN=150 DIFF=0
+[KB2-5] BAC=20/20 TRUNG=35/35(offline) NAM=60/60 TRANSIT=0 SHIPPED_OUT=NA RECEIVED_IN=NA DIFF=NA
 ```
 
 | Bước | Bắc | Trung | Nam | Đi đường | Đã xuất | Đã nhập | Phản hồi chính |
