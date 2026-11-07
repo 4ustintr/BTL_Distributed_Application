@@ -1,30 +1,30 @@
 # Thay @gh-... bằng tên GitHub thật của từng người. Dòng viết sau thắng dòng viết trước.
-*                                   @gh-minhdanh
+*                                   @4ustintr
 
-/infra/                             @gh-minhdanh
-/db/                                @gh-minhdanh
-/common/                            @gh-minhdanh
-/docs/                              @gh-minhdanh
-/scripts/                           @gh-minhdanh
-/CLAUDE.md                          @gh-minhdanh
-/.claude/                           @gh-minhdanh
+/infra/                             @4ustintr
+/db/                                @4ustintr
+/common/                            @4ustintr
+/docs/                              @4ustintr
+/scripts/                           @4ustintr
+/CLAUDE.md                          @4ustintr
+/.claude/                           @4ustintr
 
-/node-api/routers/inventory.py      @gh-tuanminh
-/node-api/services/                 @gh-tuanminh
-/node-api/recovery.py               @gh-tuanminh
-/wms/                               @gh-tuanminh
+/node-api/routers/inventory.py      @minhmoidz
+/node-api/services/                 @minhmoidz
+/node-api/recovery.py               @minhmoidz
+/wms/                               @minhmoidz
 
-/hq-api/routers/transfers.py        @gh-minhhieu
-/node-api/routers/transfers.py      @gh-minhhieu
+/hq-api/routers/transfers.py        @HakoNguyen
+/node-api/routers/transfers.py      @HakoNguyen
 
-/consumer/                          @gh-ngocchung
-/dashboard/                         @gh-ngocchung
-/hq-api/routers/dashboard.py        @gh-ngocchung
-/hq-api/routers/invariant.py        @gh-ngocchung
+/consumer/                          @VIENDANBACK5
+/dashboard/                         @VIENDANBACK5
+/hq-api/routers/dashboard.py        @VIENDANBACK5
+/hq-api/routers/invariant.py        @VIENDANBACK5
 
-/hq-api/workers/                    @gh-nhatkhanh
-/hq-api/routers/failover.py         @gh-nhatkhanh
-/wms/js/client.js                   @gh-nhatkhanh
+/hq-api/workers/                    @nichikei
+/hq-api/routers/failover.py         @nichikei
+/wms/js/client.js                   @nichikei
 
-/hq-api/main.py                     @gh-minhdanh
-/node-api/main.py                   @gh-minhdanh
+/hq-api/main.py                     @4ustintr
+/node-api/main.py                   @4ustintr

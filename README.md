@@ -10,7 +10,7 @@ Tài liệu thiết kế: https://docs.google.com/document/d/19rYYpcJDy31dYiV4I0
 4. Đọc `CLAUDE.md`, `docs/plan.md` (phân vai), rồi các mục spec của vai mình.
 
 ## Quy trình làm việc
-- Nhánh `<vai>/<việc>` (ví dụ `saga/f10-ship`), pull request vào `main`, cần 1 người duyệt và CI xanh.
+- Nhánh `<tên>/<vai>/<việc>` (ví dụ `tuanminh/saga/f10-ship`), pull request vào `main`, cần 1 người duyệt và CI xanh.
 - Với AI: `/plan-task` → `/test-first` → `/implement` → `/self-review` (lệnh trong `.claude/commands/`).
 - Hạn merge 20 giờ mỗi ngày; 20–22 giờ trưởng nhóm tích hợp trên hai máy.
 
