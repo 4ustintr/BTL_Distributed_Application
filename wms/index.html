@@ -1,0 +1,17 @@
+<!doctype html>
+<!-- Trang tạm do infra dựng; Tuấn Minh thay bằng WMS thật. -->
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <title>WMS kho</title>
+  <script src="config.js"></script>
+</head>
+<body>
+  <h1>WMS kho <span id="dc"></span></h1>
+  <p>Trang tạm. Cấu hình: <code id="cfg"></code></p>
+  <script>
+    document.getElementById("dc").textContent = window.CONFIG ? window.CONFIG.DC_ID : "?";
+    document.getElementById("cfg").textContent = JSON.stringify(window.CONFIG);
+  </script>
+</body>
+</html>
