@@ -1,7 +1,4 @@
-<!-- File sinh tự động từ Google Docs bằng scripts/sync_docs.py. Không sửa tay: sửa Google Docs rồi chạy lại script. -->
-
 # Đặc tả kỹ thuật
-
 
 Thẻ này là hợp đồng kỹ thuật cho cả nhóm và cho công cụ sinh code: khi thẻ này mâu thuẫn với chỗ khác, lấy thẻ này làm chuẩn. Mục F1–F4 mô tả môi trường, F5–F9 mô tả hợp đồng giữa các service, F10–F12 mô tả quy trình và tham số.
 
@@ -46,8 +43,11 @@ Mạng: các pg-dc đặt listen\_addresses \= '\*' và pg\_hba.conf cho phép H
 
 Cả 4 CSDL dùng cùng các tham số sau trong postgresql.conf; bảng dưới đó là các role và quyền:
 
-```text
-wal_level = logical max_replication_slots = 10 max_wal_senders = 10 max_slot_wal_keep_size = 2GB   # chặn đầy đĩa khi connector hoặc kho dừng lâu
+```ini
+wal_level = logical
+max_replication_slots = 10
+max_wal_senders = 10
+max_slot_wal_keep_size = 2GB   # chặn đầy đĩa khi connector hoặc kho dừng lâu
 ```
 
 | CSDL | Role | Quyền |
@@ -60,14 +60,35 @@ wal_level = logical max_replication_slots = 10 max_wal_senders = 10 max_slot_wal
 
 Logical replication danh mục. Mỗi subscription phải có slot riêng trên HQ, nếu không cả 3 kho cùng tên slot sub\_master và kho thứ hai sẽ bị từ chối:
 
-```text
--- Trên hq_db CREATE PUBLICATION pub_master FOR TABLE dc, product_category, product; -- Trên dc1 (đổi dc1 thành dc2, dc3 ở hai kho còn lại) CREATE SUBSCRIPTION sub_master   CONNECTION 'host=HOST_A_IP port=5432 dbname=hq_db user=repl_sub password=***'   PUBLICATION pub_master   WITH (slot_name = 'sub_master_dc1');
+```sql
+-- Trên hq_db
+CREATE PUBLICATION pub_master FOR TABLE dc, product_category, product;
+
+-- Trên dc1 (đổi dc1 thành dc2, dc3 ở hai kho còn lại)
+CREATE SUBSCRIPTION sub_master
+  CONNECTION 'host=HOST_A_IP port=5432 dbname=hq_db user=repl_sub password=***'
+  PUBLICATION pub_master
+  WITH (slot_name = 'sub_master_dc1');
 ```
 
 FDW từ HQ tới kho:
 
-```text
-CREATE EXTENSION IF NOT EXISTS postgres_fdw; CREATE SERVER srv_dc1 FOREIGN DATA WRAPPER postgres_fdw   OPTIONS (host 'HOST_B_IP', port '5433', dbname 'dc1',            connect_timeout '3', keep_connections 'off'); CREATE USER MAPPING FOR hq_app SERVER srv_dc1   OPTIONS (user 'fdw_reader', password '***'); CREATE SCHEMA dc1; IMPORT FOREIGN SCHEMA public   LIMIT TO (inventory, stock_movement, transfer_order, transfer_item)   FROM SERVER srv_dc1 INTO dc1; -- Lặp lại cho srv_dc2 (cổng 5434, schema dc2) và srv_dc3 (cổng 5435, schema dc3)
+```sql
+CREATE EXTENSION IF NOT EXISTS postgres_fdw;
+
+CREATE SERVER srv_dc1 FOREIGN DATA WRAPPER postgres_fdw
+  OPTIONS (host 'HOST_B_IP', port '5433', dbname 'dc1',
+           connect_timeout '3', keep_connections 'off');
+
+CREATE USER MAPPING FOR hq_app SERVER srv_dc1
+  OPTIONS (user 'fdw_reader', password '***');
+
+CREATE SCHEMA dc1;
+IMPORT FOREIGN SCHEMA public
+  LIMIT TO (inventory, stock_movement, transfer_order, transfer_item)
+  FROM SERVER srv_dc1 INTO dc1;
+
+-- Lặp lại cho srv_dc2 (cổng 5434, schema dc2) và srv_dc3 (cổng 5435, schema dc3)
 ```
 
 HQ API chạy 3 truy vấn FDW song song trên 3 kết nối riêng trong pool, mỗi truy vấn bọc timeout 5 giây ở tầng ứng dụng.
@@ -76,8 +97,37 @@ HQ API chạy 3 truy vấn FDW song song trên 3 kết nối riêng trong pool, 
 
 Mẫu cho kho Trung; hai kho còn lại đổi tên, cổng, dbname, slot.name, publication.name và topic.prefix.
 
-```text
-{   "name": "dc2-outbox",   "config": {     "connector.class": "io.debezium.connector.postgresql.PostgresConnector",     "plugin.name": "pgoutput",     "database.hostname": "HOST_B_IP",     "database.port": "5434",     "database.user": "debezium",     "database.password": "***",     "database.dbname": "dc2",     "topic.prefix": "dc2",     "slot.name": "debezium_dc2",     "publication.name": "dbz_outbox_dc2",     "publication.autocreate.mode": "filtered",     "table.include.list": "public.outbox_event",     "tombstones.on.delete": "false",     "transforms": "outbox",     "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",     "transforms.outbox.table.field.event.id": "event_id",     "transforms.outbox.table.field.event.key": "aggregate_id",     "transforms.outbox.table.field.event.payload": "payload",     "transforms.outbox.route.by.field": "aggregate_type",     "transforms.outbox.route.topic.replacement": "outbox.event.${routedByValue}",     "transforms.outbox.table.expand.json.payload": "true",     "key.converter": "org.apache.kafka.connect.storage.StringConverter",     "value.converter": "org.apache.kafka.connect.json.JsonConverter",     "value.converter.schemas.enable": "false",     "errors.max.retries": "3"   } }
+```json
+{
+  "name": "dc2-outbox",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "plugin.name": "pgoutput",
+    "database.hostname": "HOST_B_IP",
+    "database.port": "5434",
+    "database.user": "debezium",
+    "database.password": "***",
+    "database.dbname": "dc2",
+    "topic.prefix": "dc2",
+    "slot.name": "debezium_dc2",
+    "publication.name": "dbz_outbox_dc2",
+    "publication.autocreate.mode": "filtered",
+    "table.include.list": "public.outbox_event",
+    "tombstones.on.delete": "false",
+    "transforms": "outbox",
+    "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+    "transforms.outbox.table.field.event.id": "event_id",
+    "transforms.outbox.table.field.event.key": "aggregate_id",
+    "transforms.outbox.table.field.event.payload": "payload",
+    "transforms.outbox.route.by.field": "aggregate_type",
+    "transforms.outbox.route.topic.replacement": "outbox.event.${routedByValue}",
+    "transforms.outbox.table.expand.json.payload": "true",
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+    "errors.max.retries": "3"
+  }
+}
 ```
 
 Khởi động lại connector sau khi kho lên lại: POST http\://HOST\_A\_IP:8083/connectors/dc2-outbox/restart?includeTasks=true\&onlyFailed=true. Nên chạy thử trước buổi demo để xác nhận connector chuyển FAILED đúng như mô tả, vì hành vi thử lại có thể khác nhau giữa các bản Debezium.
@@ -88,7 +138,7 @@ Khởi động lại connector sau khi kho lên lại: POST http\://HOST\_A\_IP:
 * Lệnh gọi nội bộ giữa HQ và kho gửi header X-Internal-Key \= INTERNAL\_KEY; sai khóa trả 401\.  
 * Mọi lệnh ghi mang request\_id hoặc transfer\_id nên gửi lại an toàn. Gửi trùng trả 200 kèm "duplicate": true và trạng thái hiện tại.  
 * Lỗi luôn có dạng {"error\_code": "...", "message": "...", "details": {...}}.  
-* Lệnh gọi giữa các service dùng timeout 2 giây, thử lại tối đa 5 lần, mỗi lần cách 2 giây, trừ khi mục riêng ghi khác.
+* Lệnh gọi giữa các service dùng timeout 2 giây, gọi tối đa 5 lần (1 lần đầu và 4 lần thử lại), mỗi lần cách 2 giây, trừ khi mục riêng ghi khác. Chỉ thử lại khi lỗi mạng hoặc quá thời gian; nhận được phản hồi 4xx hoặc 5xx thì trả nguyên cho bên gọi, không thử lại.
 
 | HTTP | error\_code | Khi nào |
 | :---- | :---- | :---- |
@@ -150,14 +200,37 @@ Sau khi commit bước ship hoặc receive, Node API gọi HQ /shipped hoặc /r
 
 Consumer group: hq-consumer. Trường occurred\_at ghi bằng clock\_timestamp() ở kho, chỉ để hiển thị và đo độ trễ, không dùng để sắp thứ tự. Mẫu payload sự kiện tồn kho:
 
-```text
-{   "event_id": "8f0c2a4e-1d3b-4c5a-9e7f-0a1b2c3d4e5f",   "event_type": "InventoryChanged",   "source_dc": 2,   "occurred_at": "2026-11-20T09:15:02.481+07:00",   "product_id": 1,   "qty_on_hand": 65,   "qty_reserved": 0,   "version": 8,   "request_id": "3b1e7c90-5a2d-4f61-8b3c-9d0e1f2a3b4c",   "ref_type": "REPLAY" }
+```json
+{
+  "event_id": "8f0c2a4e-1d3b-4c5a-9e7f-0a1b2c3d4e5f",
+  "event_type": "InventoryChanged",
+  "source_dc": 2,
+  "occurred_at": "2026-11-20T09:15:02.481+07:00",
+  "product_id": 1,
+  "qty_on_hand": 65,
+  "qty_reserved": 0,
+  "version": 8,
+  "request_id": "3b1e7c90-5a2d-4f61-8b3c-9d0e1f2a3b4c",
+  "ref_type": "REPLAY"
+}
 ```
 
 InventoryChangedDirect (dự phòng, bản nộp chưa sinh) có cùng các trường, thêm changed\_by (current\_user) và client\_addr (inet\_client\_addr()). Mẫu payload sự kiện phiếu:
 
-```text
-{   "event_id": "c4d5e6f7-0a1b-4c2d-8e3f-5a6b7c8d9e0f",   "event_type": "TransferShipped",   "source_dc": 1,   "occurred_at": "2026-11-20T09:05:40.117+07:00",   "transfer_id": "5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9",   "transfer_code": "TR-2026-000001",   "direction": "OUTBOUND",   "status": "SHIPPED",   "shipped_at": "2026-11-20T09:05:40.117+07:00",   "received_at": null,   "cancel_reason": null }
+```json
+{
+  "event_id": "c4d5e6f7-0a1b-4c2d-8e3f-5a6b7c8d9e0f",
+  "event_type": "TransferShipped",
+  "source_dc": 1,
+  "occurred_at": "2026-11-20T09:05:40.117+07:00",
+  "transfer_id": "5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9",
+  "transfer_code": "TR-2026-000001",
+  "direction": "OUTBOUND",
+  "status": "SHIPPED",
+  "shipped_at": "2026-11-20T09:05:40.117+07:00",
+  "received_at": null,
+  "cancel_reason": null
+}
 ```
 
 TransferCreated, TransferReceived, TransferCancelled dùng cùng cấu trúc với mẫu trên; chỉ khác event\_type, status và trường thời gian tương ứng.
@@ -296,7 +369,7 @@ Ghi chú: inventory phải được cập nhật trước stock\_movement vì st
 | Chu kỳ và số lần lỗi để WMS chuyển failover | 2 giây, 2 lần (khoảng 4 giây) | WMS |
 | Timeout kết nối FDW | 3 giây (connect\_timeout) | Foreign server |
 | Timeout mỗi truy vấn FDW ở tầng ứng dụng | 5 giây | HQ API |
-| Timeout và thử lại khi gọi giữa các service | 2 giây, 5 lần, cách 2 giây | HQ API, Node API |
+| Timeout và thử lại khi gọi giữa các service | 2 giây, tối đa 5 lần gọi, cách 2 giây | HQ API, Node API |
 | Số lần thử lại khi xung đột version | 3 | Node API |
 | Chu kỳ đối soát định kỳ | 60 giây (tùy chọn, xem F10.k) | HQ API |
 | Thời gian tối đa một vòng Replay Worker | 30 giây | HQ API |

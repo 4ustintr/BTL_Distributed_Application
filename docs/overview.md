@@ -1,7 +1,4 @@
-<!-- File sinh tự động từ Google Docs bằng scripts/sync_docs.py. Không sửa tay: sửa Google Docs rồi chạy lại script. -->
-
 # Hệ thống quản lý mạng lưới kho phân tán
-
 
 ## Bài tập lớn môn Phát triển ứng dụng phân tán · Trung tâm điều hành (HQ) và ba kho Bắc, Trung, Nam
 
