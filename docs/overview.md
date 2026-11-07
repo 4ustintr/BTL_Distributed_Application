@@ -86,7 +86,7 @@ Nhóm tự nêu các giới hạn dưới đây để làm rõ phạm vi của t
 | Không hỗ trợ xuất thiếu, nhận thiếu | Chênh lệch thực tế khi vận chuyển không ghi được | Thêm trạng thái PARTIALLY\_RECEIVED và phiếu điều chỉnh chênh lệch |
 | Danh mục mới được tạo khi một kho đang sập | Lệnh đẩy lại có thể nhắc tới SKU mà kho chưa nhận được | Kho ở trạng thái RECOVERING chờ subscription bắt kịp (pg\_stat\_subscription) trước khi nhận replay |
 | Đồng hồ giữa hai máy | Số đo độ trễ sai nếu hai máy lệch giờ | NTP, hoặc đo trên cùng một máy |
-| Bảo mật tối giản | Một khóa nội bộ dùng chung, chưa có TLS | mTLS giữa các service, khóa riêng cho từng kho, TLS cho kết nối PostgreSQL |
+| Bảo mật tối giản | Một khóa nội bộ dùng chung, chưa có TLS; pg\_hba cho phép mọi địa chỉ (bắt buộc scram-sha-256), vì Docker Desktop đi qua NAT | Giới hạn pg\_hba theo HOST\_A\_IP, HOST\_B\_IP khi chạy Docker trên Linux không qua NAT; mTLS giữa các service, khóa riêng cho từng kho, TLS cho kết nối PostgreSQL |
 | Replication slot giữ WAL khi connector hoặc subscriber dừng lâu | Có thể đầy đĩa | Đã giới hạn bằng max\_slot\_wal\_keep\_size; thêm cảnh báo theo dõi dung lượng đĩa |
 | Demo chỉ có 1 SKU | Chưa đánh giá với dữ liệu lớn | Sinh nhiều SKU và đo lại độ trễ, thông lượng |
 
