@@ -1,0 +1,30 @@
+# Thay @gh-... bằng tên GitHub thật của từng người. Dòng viết sau thắng dòng viết trước.
+*                                   @gh-minhdanh
+
+/infra/                             @gh-minhdanh
+/db/                                @gh-minhdanh
+/common/                            @gh-minhdanh
+/docs/                              @gh-minhdanh
+/scripts/                           @gh-minhdanh
+/CLAUDE.md                          @gh-minhdanh
+/.claude/                           @gh-minhdanh
+
+/node-api/routers/inventory.py      @gh-tuanminh
+/node-api/services/                 @gh-tuanminh
+/node-api/recovery.py               @gh-tuanminh
+/wms/                               @gh-tuanminh
+
+/hq-api/routers/transfers.py        @gh-minhhieu
+/node-api/routers/transfers.py      @gh-minhhieu
+
+/consumer/                          @gh-ngocchung
+/dashboard/                         @gh-ngocchung
+/hq-api/routers/dashboard.py        @gh-ngocchung
+/hq-api/routers/invariant.py        @gh-ngocchung
+
+/hq-api/workers/                    @gh-nhatkhanh
+/hq-api/routers/failover.py         @gh-nhatkhanh
+/wms/js/client.js                   @gh-nhatkhanh
+
+/hq-api/main.py                     @gh-minhdanh
+/node-api/main.py                   @gh-minhdanh

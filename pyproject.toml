@@ -1,0 +1,14 @@
+# Chỉ dùng cho cấu hình công cụ; dependency nằm trong requirements*.txt
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+  "integration: cần container thật hoặc 2 máy, không chạy trong CI",
+  "optional: test tùy chọn trong docs/tests.md",
+]

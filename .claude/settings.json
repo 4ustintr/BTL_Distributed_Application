@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pytest *)",
+      "Bash(ruff *)",
+      "Bash(make lint)",
+      "Bash(make test*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(docker compose ps*)",
+      "Bash(docker compose logs*)"
+    ],
+    "ask": [
+      "Bash(git commit*)",
+      "Bash(git push*)",
+      "Bash(docker compose down*)",
+      "Bash(make reset*)",
+      "Edit(db/migrations/**)",
+      "Edit(common/**)",
+      "Edit(docs/**)",
+      "Edit(CLAUDE.md)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Bash(git push --force*)",
+      "Bash(rm -rf *)"
+    ]
+  }
+}
