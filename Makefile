@@ -7,6 +7,9 @@ TEST_DIRS = tests/common tests/node_api tests/hq_api tests/consumer
 
 # Docker Compose (F2, F12). Biến đọc từ .env ở gốc repo; đổi file bằng: make up-hq ENV_FILE=...
 ENV_FILE ?= .env
+# Script trong infra/scripts, scripts/ đọc ENV_FILE và CONNECT_URL từ môi trường.
+CONNECT_URL ?= http://localhost:8083
+export ENV_FILE CONNECT_URL
 COMPOSE_HQ = docker compose --env-file $(ENV_FILE) -f infra/compose.hq.yml
 COMPOSE_DC = docker compose --env-file $(ENV_FILE) -f infra/compose.dc.yml
 # make logs S=hq-api  (để trống = mọi service); make logs N=200
@@ -48,6 +51,48 @@ test:
 test-all:
 	@for d in $(TEST_DIRS); do pytest $$d || [ $$? -eq 5 ] || exit 1; done
 
-reset seed race race-unsafe check-invariant pause-dc2 unpause-dc2 kill-dc2 start-dc2 \
-restart-connector-dc2 replay-again bench-cdc:
+# ---- Khởi tạo lại toàn bộ (F12) ---------------------------------------------------------------
+# Thứ tự cố định: xóa cả hai phía kèm volume (cả Kafka, để Consumer không áp dụng lại sự kiện cũ);
+# máy A; máy B; subscription; FDW; connector; seed. Bước nào lỗi thì script in tên bước và dừng.
+reset:
+	@echo "== reset 1/8: down -v ca hai compose"
+	$(COMPOSE_DC) down -v
+	$(COMPOSE_HQ) down -v
+	@echo "== reset 2/8: up-hq"
+	$(MAKE) --no-print-directory up-hq
+	@echo "== reset 3/8: up-dc"
+	$(MAKE) --no-print-directory up-dc
+	@echo "== reset 4/8: cho pg-hq, kafka, kafka-connect, pg-dc1..3 healthy"
+	bash infra/scripts/wait-healthy.sh
+	@echo "== reset 5/8: logical replication danh muc"
+	bash infra/scripts/setup-replication.sh
+	@echo "== reset 6/8: postgres_fdw, v_inventory_all"
+	bash infra/scripts/setup-fdw.sh
+	@echo "== reset 7/8: connector Debezium"
+	bash infra/scripts/register-connectors.sh
+	@echo "== reset 8/8: seed"
+	$(MAKE) --no-print-directory seed
+	@echo "== reset xong. Kiem tra: bash infra/scripts/verify.sh"
+
+seed:
+	bash scripts/seed.sh
+
+# ---- Tạo sự cố cho kho Trung (máy B) ---------------------------------------------------------
+kill-dc2:
+	docker kill pg-dc2 node-api-dc2
+
+start-dc2:
+	docker start pg-dc2 node-api-dc2
+
+pause-dc2:
+	docker pause pg-dc2 node-api-dc2
+
+unpause-dc2:
+	docker unpause pg-dc2 node-api-dc2
+
+# Máy A: F4, chỉ khởi động lại connector/task đang FAILED rồi chờ RUNNING.
+restart-connector-dc2:
+	bash infra/scripts/restart-connector.sh dc2-outbox
+
+race race-unsafe check-invariant replay-again bench-cdc:
 	@echo "TODO: $@ (xem docs/spec.md mục F12)"
