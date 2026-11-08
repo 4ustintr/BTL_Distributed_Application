@@ -328,7 +328,7 @@ Lịch sử chuyển trạng thái của phiếu điều chuyển, mỗi lần �
 
 ### 2.14. Bảng dc\_status (HQ)
 
-Trạng thái của từng kho theo góc nhìn của HQ, do Health Monitor cập nhật. Không đặt trạng thái vào bảng dc vì bảng dc được nhân bản xuống kho; ghi vào đó mỗi 2 giây sẽ sinh luồng replication vô ích. Quy tắc chuyển trạng thái xem thẻ Đặc tả kỹ thuật, mục máy trạng thái.
+Trạng thái của từng kho theo góc nhìn của HQ, do Health Monitor cập nhật. Không đặt trạng thái vào bảng dc vì bảng dc được nhân bản xuống kho; ghi vào đó mỗi 2 giây sẽ sinh luồng replication vô ích. Quy tắc chuyển trạng thái xem thẻ Đặc tả kỹ thuật, mục máy trạng thái. Seed tạo dòng ban đầu ở trạng thái RECOVERING; Health Monitor chỉ UPDATE, không INSERT.
 
 | Tên cột | Kiểu dữ liệu | Ràng buộc | Mô tả |
 | :---- | :---- | :---- | :---- |

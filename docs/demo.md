@@ -87,7 +87,7 @@ Kho Trung vừa xuất 5 thùng cho đại lý thì máy chủ mất điện. Ba
 4. Các kho khác không bị ảnh hưởng: kho Bắc và kho Nam vẫn tra cứu, nhập, xuất bình thường.  
 5. HQ bấm Đối soát: HQ chạy 3 truy vấn FDW riêng, mỗi kho một câu. Bắc 20 và Nam 60 lấy trực tiếp từ kho; kho Trung báo lỗi ngay (connection refused) nên Dashboard dùng snapshot: 35, nhãn "offline, dữ liệu lúc hh:mm". Không gộp 3 bảng trong một câu UNION ALL, vì chỉ cần một kho chết là cả câu lỗi và mất luôn số của hai kho còn sống.  
 6. transfer\_summary vẫn hiện đủ các phiếu liên quan đến kho Trung.  
-7. Kafka Connect: connector dc2-outbox chuyển FAILED sau khi hết 3 lần thử lại (errors.max.retries \= 3), mất khoảng vài chục giây; dc1-outbox và dc3-outbox vẫn RUNNING. Nếu tới bước này connector chưa FAILED thì nói trước điều sẽ xảy ra và quay lại Kafka UI sau.
+7. Kafka Connect: task của connector dc2-outbox chuyển FAILED sau khoảng 15–30 giây (connector vẫn báo RUNNING), khi hết 3 lần thử lại (errors.max.retries \= 3); dc1-outbox và dc3-outbox vẫn RUNNING. Nếu tới bước này task chưa FAILED thì nói trước điều sẽ xảy ra và quay lại Kafka UI sau.
 
 ### Kết quả mong đợi
 
