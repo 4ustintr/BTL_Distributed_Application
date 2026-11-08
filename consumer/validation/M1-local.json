@@ -1,0 +1,9 @@
+{
+  "count": 200,
+  "p50_ms": 520.27,
+  "p95_ms": 779.491,
+  "max_ms": 858.517,
+  "environment": "Single Docker host; PostgreSQL 16 / Debezium 2.7 / Kafka 3.8",
+  "source": "Test-only SQL outbox emitter; excludes Node API HTTP path",
+  "measured_at": "2026-11-08T10:57:57.053631+00:00"
+}
