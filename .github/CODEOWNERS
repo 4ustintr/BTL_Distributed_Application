@@ -9,22 +9,22 @@
 /CLAUDE.md                          @4ustintr
 /.claude/                           @4ustintr
 
-/node-api/routers/inventory.py      @minhmoidz
-/node-api/services/                 @minhmoidz
-/node-api/recovery.py               @minhmoidz
-/wms/                               @minhmoidz
+/node-api/routers/inventory.py      @4ustintr
+/node-api/services/                 @4ustintr
+/node-api/recovery.py               @4ustintr
+/wms/                               @4ustintr
 
-/hq-api/routers/transfers.py        @HakoNguyen
-/node-api/routers/transfers.py      @HakoNguyen
+/hq-api/routers/transfers.py        @4ustintr
+/node-api/routers/transfers.py      @4ustintr
 
-/consumer/                          @VIENDANBACK5
-/dashboard/                         @VIENDANBACK5
-/hq-api/routers/dashboard.py        @VIENDANBACK5
-/hq-api/routers/invariant.py        @VIENDANBACK5
+/consumer/                          @4ustintr
+/dashboard/                         @4ustintr
+/hq-api/routers/dashboard.py        @4ustintr
+/hq-api/routers/invariant.py        @4ustintr
 
-/hq-api/workers/                    @nichikei
-/hq-api/routers/failover.py         @nichikei
-/wms/js/client.js                   @nichikei
+/hq-api/workers/                    @4ustintr
+/hq-api/routers/failover.py         @4ustintr
+/wms/js/client.js                   @4ustintr
 
 /hq-api/main.py                     @4ustintr
 /node-api/main.py                   @4ustintr
