@@ -137,7 +137,7 @@ Mẫu cho kho Trung; hai kho còn lại đổi tên, cổng, dbname, slot.name v
 }
 ```
 
-Khởi động lại connector sau khi kho lên lại: POST http\://HOST\_A\_IP:8083/connectors/dc2-outbox/restart?includeTasks=true\&onlyFailed=true. Nên chạy thử trước buổi demo để xác nhận connector chuyển FAILED đúng như mô tả, vì hành vi thử lại có thể khác nhau giữa các bản Debezium.
+Khởi động lại connector sau khi kho lên lại: POST http\://HOST\_A\_IP:8083/connectors/dc2-outbox/restart?includeTasks=true\&onlyFailed=true. Nên chạy thử trước buổi demo để xác nhận task của connector chuyển FAILED (connector vẫn báo RUNNING) đúng như mô tả, vì hành vi thử lại có thể khác nhau giữa các bản Debezium.
 
 ## F5. Quy ước API chung
 
@@ -400,7 +400,7 @@ Dữ liệu danh mục ghi thẳng vào hq\_db bằng script seed; tồn kho nh�
 | :---- | :---- | :---- |
 | make up-hq, make up-dc | Máy A, máy B | Dựng các container của máy đó |
 | make reset | Cả hai máy | Thứ tự cố định: máy A trước (hq\_db, Kafka, Kafka Connect, HQ API), rồi máy B (3 kho và subscription), rồi tạo 3 connector, cuối cùng make seed. Mỗi máy chạy docker compose down \-v rồi dựng lại. Phải xóa cả volume Kafka: nếu chỉ xóa CSDL, Consumer sẽ áp dụng lại sự kiện cũ còn trong topic vì processed\_event đã bị xóa |
-| make seed | Máy A | Ghi danh mục; chờ GET /dc-status báo cả 3 kho ONLINE (kho khởi động ở RECOVERING và từ chối lệnh nhập từ WMS cho tới khi Replay Worker gọi /recovery/complete); rồi gọi API nhập tồn ban đầu |
+| make seed | Máy A | Ghi danh mục; tạo 3 dòng dc\_status ở trạng thái RECOVERING; chờ GET /dc-status báo cả 3 kho ONLINE (kho khởi động ở RECOVERING và từ chối lệnh nhập từ WMS cho tới khi Replay Worker gọi /recovery/complete); rồi gọi API nhập tồn ban đầu |
 | make race, make race-unsafe | Máy B | Bắn 2 lệnh xuất 30 thùng cùng lúc vào kho Bắc; bản unsafe khởi động lại node-api-dc1 với LOCK\_MODE=none |
 | make check-invariant | Máy A | Gọi GET /invariant, in 4 số và chênh lệch |
 | make pause-dc2, unpause-dc2, kill-dc2, start-dc2 | Máy B | Tạo sự cố cho kho Trung |
