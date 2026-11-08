@@ -1,0 +1,17 @@
+# Merge with infra/compose.hq.yml; paths are relative to the first compose file (infra/).
+services:
+  hq-consumer:
+    build:
+      context: ..
+      dockerfile: consumer/Dockerfile
+    image: btl/hq-consumer
+    container_name: hq-consumer
+    depends_on:
+      pg-hq:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      HQ_DB_URL: postgresql://hq_app:${POSTGRES_PASSWORD}@pg-hq:5432/hq_db
+      KAFKA_BOOTSTRAP: kafka:9092
+    restart: unless-stopped
