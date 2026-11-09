@@ -56,9 +56,13 @@ def test_health_503_when_db_down(make_client) -> None:  # type: ignore[no-untype
 def test_internal_route_requires_key(make_client) -> None:  # type: ignore[no-untyped-def]
     with make_client(FakePool()) as c:
 
-        @c.app.post("/replay")  # route giả thay cho router của Tuấn Minh
+        @c.app.post("/replay")  # route giả: chỉ kiểm khóa, không phụ thuộc /replay thật (F10.a)
         async def replay() -> dict[str, bool]:
             return {"ok": True}
+
+        # Đưa route giả lên đầu để thắng route /replay thật (nếu đã có) khi khớp đường dẫn
+        routes = c.app.router.routes
+        routes.insert(0, routes.pop())
 
         assert c.post("/replay").status_code == 401
         assert c.post("/replay", headers={INTERNAL_KEY_HEADER: KEY}).status_code == 200
