@@ -125,6 +125,6 @@ check-invariant:
 replay-again:
 	bash scripts/replay-again.sh
 
-# M1 (Ngọc Chung): nối vào script đo trong scripts/measure/ khi script được merge.
+# M1 (docs/tests.md mục 5), máy A: make bench-cdc ARGS="DC=2 COUNT=200 OUT=m1.json"
 bench-cdc:
-	@echo "TODO: $@ (Ngoc Chung, xem scripts/measure/README.md)"
+	env $(ARGS) bash scripts/measure/bench-cdc.sh
