@@ -1,17 +1,61 @@
 <!doctype html>
-<!-- Trang tạm do infra dựng; Tuấn Minh thay bằng WMS thật. -->
 <html lang="vi">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WMS kho</title>
+  <link rel="stylesheet" href="css/style.css">
   <script src="config.js"></script>
 </head>
 <body>
-  <h1>WMS kho <span id="dc"></span></h1>
-  <p>Trang tạm. Cấu hình: <code id="cfg"></code></p>
-  <script>
-    document.getElementById("dc").textContent = window.CONFIG ? window.CONFIG.DC_ID : "?";
-    document.getElementById("cfg").textContent = JSON.stringify(window.CONFIG);
-  </script>
+  <header>
+    <h1>WMS kho <span id="dc-name">?</span></h1>
+    <div class="status">
+      <span id="mode" class="badge badge-unknown" title="Chế độ của Node API">chưa rõ</span>
+      <button type="button" id="refresh">Làm mới</button>
+    </div>
+  </header>
+
+  <main>
+    <p id="notice" class="notice" role="status" hidden></p>
+
+    <section aria-labelledby="h-stock">
+      <h2 id="h-stock">Tồn kho</h2>
+      <table>
+        <thead>
+          <tr><th>Mã hàng</th><th>Tồn</th><th>Đã giữ</th><th>Khả dụng</th><th>Version</th></tr>
+        </thead>
+        <tbody id="stock-rows"><tr><td colspan="5">Đang tải…</td></tr></tbody>
+      </table>
+    </section>
+
+    <section aria-labelledby="h-move">
+      <h2 id="h-move">Nhập, xuất hàng</h2>
+      <form id="stock-form" novalidate>
+        <label>Mã hàng <input id="product-id" inputmode="numeric" value="1" required></label>
+        <label>Số lượng (thùng) <input id="qty" inputmode="numeric" value="1" required></label>
+        <label>Người thao tác <input id="created-by" maxlength="50" required></label>
+        <div class="actions">
+          <button type="submit" id="btn-inbound" data-kind="inbound">Nhập hàng</button>
+          <button type="submit" id="btn-outbound" data-kind="outbound">Xuất hàng</button>
+        </div>
+      </form>
+      <p id="result" class="result" role="status"></p>
+    </section>
+
+    <section aria-labelledby="h-transfer">
+      <h2 id="h-transfer">Phiếu điều chuyển</h2>
+      <h3>Cần xuất hàng</h3>
+      <ul id="to-ship" class="transfers"></ul>
+      <h3>Cần nhận hàng</h3>
+      <ul id="to-receive" class="transfers"></ul>
+      <h3>Phiếu đến, chưa xuất (có thể từ chối)</h3>
+      <ul id="to-decline" class="transfers"></ul>
+    </section>
+  </main>
+
+  <script src="js/logic.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
 </body>
 </html>
