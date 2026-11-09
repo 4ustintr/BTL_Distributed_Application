@@ -14,3 +14,7 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
       - run: make test-ci
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - run: make test-js

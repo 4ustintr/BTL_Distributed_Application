@@ -54,13 +54,25 @@ def test_status_values_match_db_checks() -> None:
     assert [s.value for s in c.TransferDirection] == ["OUTBOUND", "INBOUND"]
     assert [s.value for s in c.CancelReason] == ["DECLINED", "INSUFFICIENT_STOCK", "TIMEOUT"]
     assert [s.value for s in c.MovementType] == [
-        "INBOUND", "OUTBOUND", "TRANSFER_OUT", "TRANSFER_IN", "ADJUST",
+        "INBOUND",
+        "OUTBOUND",
+        "TRANSFER_OUT",
+        "TRANSFER_IN",
+        "ADJUST",
     ]
     assert [s.value for s in c.RefType] == [
-        "ISSUE", "RECEIPT", "TRANSFER", "REPLAY", "STOCKTAKE", "DIRECT",
+        "ISSUE",
+        "RECEIPT",
+        "TRANSFER",
+        "REPLAY",
+        "STOCKTAKE",
+        "DIRECT",
     ]
     assert [s.value for s in c.InventorySource] == [
-        "snapshot", "realtime", "offline", "provisional",
+        "snapshot",
+        "realtime",
+        "offline",
+        "provisional",
     ]
     assert [s.value for s in c.TransferEventSource] == ["HQ", "DC1", "DC2", "DC3"]
 
@@ -87,6 +99,7 @@ def test_f11_parameters() -> None:
     assert (c.HEALTH_CHECK_INTERVAL_S, c.HEALTH_CHECK_TIMEOUT_S) == (2, 1)
     assert c.OFFLINE_MISSED_THRESHOLD == 3
     assert (c.WMS_HEALTH_INTERVAL_S, c.WMS_FAILOVER_MISSED) == (2, 2)
+    assert c.WMS_HEALTH_TIMEOUT_S == 1.0  # F11: timeout health check của WMS
     assert c.FDW_CONNECT_TIMEOUT_S == 3
     assert c.FDW_QUERY_TIMEOUT_S == 5
     assert (c.HTTP_TIMEOUT_S, c.HTTP_MAX_RETRIES, c.HTTP_RETRY_INTERVAL_S) == (2, 4, 2)
@@ -100,12 +113,29 @@ def test_f11_parameters() -> None:
 
 def test_env_names_f2() -> None:
     assert {
-        c.ENV_HOST_A_IP, c.ENV_HOST_B_IP, c.ENV_INTERNAL_KEY, c.ENV_DC_ID, c.ENV_NODE_DB_URL,
-        c.ENV_HQ_URL, c.ENV_LOCK_MODE, c.ENV_HQ_DB_URL, c.ENV_NODE_URLS, c.ENV_KAFKA_BOOTSTRAP,
+        c.ENV_HOST_A_IP,
+        c.ENV_HOST_B_IP,
+        c.ENV_INTERNAL_KEY,
+        c.ENV_DC_ID,
+        c.ENV_NODE_DB_URL,
+        c.ENV_HQ_URL,
+        c.ENV_LOCK_MODE,
+        c.ENV_HQ_DB_URL,
+        c.ENV_NODE_URLS,
+        c.ENV_KAFKA_BOOTSTRAP,
         c.ENV_NODE_URL,
     } == {
-        "HOST_A_IP", "HOST_B_IP", "INTERNAL_KEY", "DC_ID", "NODE_DB_URL", "HQ_URL", "LOCK_MODE",
-        "HQ_DB_URL", "NODE_URLS", "KAFKA_BOOTSTRAP", "NODE_URL",
+        "HOST_A_IP",
+        "HOST_B_IP",
+        "INTERNAL_KEY",
+        "DC_ID",
+        "NODE_DB_URL",
+        "HQ_URL",
+        "LOCK_MODE",
+        "HQ_DB_URL",
+        "NODE_URLS",
+        "KAFKA_BOOTSTRAP",
+        "NODE_URL",
     }
     assert [m.value for m in c.LockMode] == ["optimistic", "none"]
 

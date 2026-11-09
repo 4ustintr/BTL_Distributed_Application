@@ -149,9 +149,9 @@ Khởi động lại connector sau khi kho lên lại: POST http\://HOST\_A\_IP:
 
 | HTTP | error\_code | Khi nào |
 | :---- | :---- | :---- |
-| 400 | VALIDATION\_ERROR | Thiếu trường, qty ≤ 0, SKU không tồn tại trong danh mục |
+| 400 | VALIDATION\_ERROR | Thiếu trường, qty ≤ 0, lệnh ghi có SKU (trong body) không tồn tại trong danh mục |
 | 401 | UNAUTHORIZED | Sai X-Internal-Key |
-| 404 | NOT\_FOUND | Không có phiếu hoặc SKU |
+| 404 | NOT\_FOUND | Không có phiếu; lệnh đọc có SKU (trong path hoặc query) không tồn tại trong danh mục |
 | 409 | VERSION\_CONFLICT | Hết 3 lần thử lại do xung đột version |
 | 409 | INVALID\_STATE | Thao tác không hợp lệ với trạng thái hiện tại của phiếu |
 | 409 | DC\_NOT\_OFFLINE | Gọi failover khi HQ vẫn thấy kho còn sống |
@@ -190,7 +190,7 @@ Sau khi commit bước ship hoặc receive, Node API gọi HQ /shipped hoặc /r
 | POST /transfers/{id}/shipped | Node API kho nguồn | {"shipped\_at"} | 200 |
 | POST /transfers/{id}/received | Node API kho đích | {"received\_at"} | 200 |
 | POST /transfers/{id}/decline | Node API kho đích | {"reason"} | 200 {"status": "CANCELLED"}; 409 INVALID\_STATE nếu kho nguồn đã xuất. Dashboard cũng gọi endpoint này cho nút Hủy phiếu, với reason \= TIMEOUT |
-| POST /failover/dc/{dc\_id}/inbound | WMS | {"request\_id", "product\_id", "qty", "created\_by"} | 200 {"txn\_id", "status": "PENDING", "provisional\_qty": 65}; 409 DC\_NOT\_OFFLINE |
+| POST /failover/dc/{dc\_id}/inbound | WMS | {"request\_id", "product\_id", "qty", "created\_by"} | 200 {"txn\_id", "status": "PENDING", "provisional\_qty": 65, "duplicate": false}; gửi trùng request\_id trả 200 kèm duplicate: true, status hiện tại của dòng và provisional\_qty tính lại (F10.h); 409 DC\_NOT\_OFFLINE |
 | POST /failover/dc/{dc\_id}/outbound | WMS | Như trên | 200; 409 DC\_NOT\_OFFLINE; 422 nếu khả dụng tạm tính không đủ |
 | GET /dashboard/inventory?mode=snapshot\&product\_id=1 | Dashboard | mode \= snapshot hoặc realtime | 200 {"items": \[{"dc\_id", "qty\_on\_hand", "qty\_reserved", "qty\_in\_transit", "source", "as\_of"}\]}; source là snapshot, realtime, offline hoặc provisional |
 | GET /dc-status | Dashboard |  | 200 \[{"dc\_id", "status", "updated\_at"}\] |
@@ -260,6 +260,7 @@ TransferCreated, TransferReceived, TransferCancelled dùng cùng cấu trúc v�
 | ONLINE, RECOVERING | OFFLINE | Health Monitor | missed\_count ≥ 3 |
 | OFFLINE | RECOVERING | Health Monitor | Health check thành công và (mode \= RECOVERING hoặc kho còn pending\_txn PENDING) |
 | OFFLINE | ONLINE | Health Monitor | Health check thành công, mode \= ONLINE, không còn PENDING (kho chỉ mất mạng, không khởi động lại) |
+| ONLINE | RECOVERING | Health Monitor | Health check thành công và mode \= RECOVERING |
 | RECOVERING | ONLINE | Replay Worker | Không còn PENDING và /recovery/complete trả 200 |
 
 ### Chế độ của Node API
@@ -283,8 +284,10 @@ TransferCreated, TransferReceived, TransferCancelled dùng cùng cấu trúc v�
 
 | Từ | Sang | Điều kiện | Hành vi |
 | :---- | :---- | :---- | :---- |
+| NORMAL | WAITING | Health check thành công và Node API báo mode \= RECOVERING | Khóa nút nhập, xuất; hiện "kho đang đồng bộ" |
 | NORMAL | FAILOVER | 2 lần GET /health tới Node API thất bại | Gửi nhập, xuất tới HQ /failover; gặp 409 DC\_NOT\_OFFLINE thì hiện thông báo và gửi lại sau 2 giây |
 | FAILOVER | WAITING | Node API trả lời với mode \= RECOVERING | Khóa nút nhập, xuất; hiện "kho đang đồng bộ" |
+| WAITING | FAILOVER | 2 lần GET /health tới Node API thất bại liên tiếp | Như NORMAL → FAILOVER |
 | FAILOVER, WAITING | NORMAL | Node API trả lời với mode \= ONLINE | Gọi lại Node API như bình thường |
 
 WMS sinh request\_id một lần cho mỗi thao tác của người dùng và giữ nguyên khi gửi lại, kể cả khi chuyển từ Node API sang HQ.
@@ -344,10 +347,11 @@ Ghi chú: inventory phải được cập nhật trước stock\_movement vì st
 
 ### h. Ghi hộ tại HQ (POST /failover/dc/{dc\_id}/…)
 
-1. dc\_status của kho khác OFFLINE thì trả 409 DC\_NOT\_OFFLINE.  
-2. Đọc inventory\_snapshot của (dc\_id, product\_id) và các pending\_txn đang PENDING của kho đó; demo chỉ có một người thao tác nên không khóa dòng (xem Giới hạn).  
-3. Tính khả dụng tạm tính (Thiết kế CSDL, mục 2.4). Lệnh xuất không đủ thì ROLLBACK, trả 422\.  
-4. INSERT pending\_txn với txn\_id \= request\_id … ON CONFLICT (txn\_id) DO NOTHING, COMMIT, trả 200 kèm provisional\_qty.
+1. Kiểm tra trùng: txn\_id (\= request\_id) đã có trong pending\_txn thì trả 200 kèm duplicate: true, trạng thái hiện tại của dòng đó và provisional\_qty tính lại tại thời điểm trả lời (inventory\_snapshot cộng các pending\_txn đang PENDING của kho đó, Thiết kế CSDL, mục 2.4); không kiểm tra dc\_status và không kiểm tra hạn mức lại.  
+2. dc\_status của kho khác OFFLINE thì trả 409 DC\_NOT\_OFFLINE.  
+3. Đọc inventory\_snapshot của (dc\_id, product\_id) và các pending\_txn đang PENDING của kho đó; demo chỉ có một người thao tác nên không khóa dòng (xem Giới hạn).  
+4. Tính khả dụng tạm tính (Thiết kế CSDL, mục 2.4). Lệnh xuất không đủ thì ROLLBACK, trả 422\.  
+5. INSERT pending\_txn với txn\_id \= request\_id … ON CONFLICT (txn\_id) DO NOTHING, COMMIT, trả 200 kèm provisional\_qty.
 
 ### i. Replay Worker (mỗi 2 giây)
 
@@ -373,7 +377,7 @@ Ghi chú: inventory phải được cập nhật trước stock\_movement vì st
 | :---- | :---- | :---- |
 | Chu kỳ health check của HQ | 2 giây, timeout 1 giây | Health Monitor |
 | Số lần lỗi liên tiếp để coi là OFFLINE | 3 (khoảng 6 giây) | Health Monitor |
-| Chu kỳ và số lần lỗi để WMS chuyển failover | 2 giây, 2 lần (khoảng 4 giây) | WMS |
+| Chu kỳ và số lần lỗi để WMS chuyển failover | 2 giây, timeout 1 giây, 2 lần (khoảng 4 giây) | WMS |
 | Timeout kết nối FDW | 3 giây (connect\_timeout) | Foreign server |
 | Timeout mỗi truy vấn FDW ở tầng ứng dụng | 5 giây | HQ API |
 | Timeout và thử lại khi gọi giữa các service | 2 giây, tối đa 5 lần gọi, cách 2 giây | HQ API, Node API |
