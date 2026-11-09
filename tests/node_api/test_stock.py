@@ -32,6 +32,8 @@ from common.constants import (
     ErrorCode,
     EventType,
     LockMode,
+    MovementType,
+    RefType,
 )
 from common.errors import AppError
 
@@ -254,6 +256,233 @@ async def test_consume_lock_mode_none_still_checks_availability_on_the_read() ->
         )  # fmt: skip
     assert exc.value.error_code == ErrorCode.INSUFFICIENT_STOCK
     assert "update_inventory" not in conn.kinds()
+
+
+# ---------------------------------------------------------------------------
+# consume(movement_type=TRANSFER_OUT): xuất điều chuyển (F10.c bước 2, db.md 2.7, 2.8)
+# ---------------------------------------------------------------------------
+TRANSFER_REQ = uuid.UUID("66666666-6666-4666-8666-666666666666")
+TRANSFER_ID = "77777777-7777-4777-8777-777777777777"
+
+
+async def ship(conn: FakeConn, qty: int = 50, **over):  # type: ignore[no-untyped-def]
+    args = dict(
+        dc_id=DC_ID, product_id=PRODUCT_ID, qty=qty, request_id=TRANSFER_REQ, created_by=WHO,
+        ref_type=RefType.TRANSFER, movement_type=MovementType.TRANSFER_OUT,
+    )  # fmt: skip
+    return await stock.consume(conn, **{**args, **over})
+
+
+async def test_transfer_out_lowers_on_hand_and_reserved_together() -> None:
+    conn = FakeConn(
+        {
+            "select_inventory": [inv_row(9, 70, 50)],
+            "update_inventory": [row(20, 0, 10)],
+            "insert_movement": [MOVEMENT_OK],
+        }
+    )
+    result = await ship(conn, 50)
+    update = conn.calls_of("update_inventory")[0]
+    assert re.search(r"qty_on_hand\s*=\s*qty_on_hand\s*-\s*\$\d", update.sql)
+    assert re.search(r"qty_reserved\s*=\s*qty_reserved\s*-\s*\$\d", update.sql)
+    assert re.search(
+        r"qty_reserved\s*>=\s*\$\d", update.sql
+    )  # điều kiện giữ chỗ, không phải khả dụng
+    assert not re.search(r"qty_on_hand\s*-\s*qty_reserved\s*>=", update.sql)
+    assert re.search(r"version\s*=\s*\$\d", update.sql)
+    assert not re.search(r"version\s*=\s*(inventory\.)?version\s*\+", update.sql)
+    assert 9 in update.args and 50 in update.args
+    assert result["qty_on_hand"] == 20 and result["qty_reserved"] == 0  # đọc được kiểu row[...]
+    assert result.version == 10  # và kiểu thuộc tính, router /outbound đang dùng kiểu này
+
+
+async def test_transfer_out_writes_transfer_out_movement() -> None:
+    conn = FakeConn(
+        {
+            "select_inventory": [inv_row(9, 70, 50)],
+            "update_inventory": [row(20, 0, 10)],
+            "insert_movement": [MOVEMENT_OK],
+        }
+    )
+    await ship(conn, 50)
+    call = conn.calls_of("insert_movement")[0]
+    assert "TRANSFER_OUT" in call.str_args and "TRANSFER" in call.str_args
+    assert -50 in call.args and str(TRANSFER_REQ) in call.str_args
+    assert "OUTBOUND" not in call.str_args and "ISSUE" not in call.str_args
+
+
+async def test_transfer_out_ref_type_defaults_to_transfer_and_ref_id_is_recorded() -> None:
+    conn = FakeConn(
+        {
+            "select_inventory": [inv_row(9, 70, 50)],
+            "update_inventory": [row(20, 0, 10)],
+            "insert_movement": [MOVEMENT_OK],
+        }
+    )
+    await stock.consume(
+        conn, dc_id=DC_ID, product_id=PRODUCT_ID, qty=50, request_id=TRANSFER_REQ,
+        created_by=WHO, movement_type=MovementType.TRANSFER_OUT, ref_id=TRANSFER_ID,
+    )  # fmt: skip
+    call = conn.calls_of("insert_movement")[0]
+    assert "TRANSFER" in call.str_args and TRANSFER_ID in call.str_args  # db.md 2.8 ref_id
+
+
+async def test_transfer_out_reserved_too_small_is_insufficient_stock() -> None:
+    conn = FakeConn({"select_inventory": [inv_row(9, 70, 10)], "update_inventory": [None]})
+    with pytest.raises(AppError) as exc:
+        await ship(conn, 50)
+    # F10.c bước 2 và /ship: 422 INSUFFICIENT_STOCK; 409 INVALID_STATE chỉ dành cho phiếu CANCELLED
+    assert exc.value.error_code == ErrorCode.INSUFFICIENT_STOCK and exc.value.status_code == 422
+    assert "insert_movement" not in conn.kinds()
+
+
+async def test_transfer_out_without_inventory_row_is_insufficient_stock() -> None:
+    conn = FakeConn({"select_inventory": [None]})
+    with pytest.raises(AppError) as exc:
+        await ship(conn, 50)
+    assert exc.value.error_code == ErrorCode.INSUFFICIENT_STOCK
+    assert "update_inventory" not in conn.kinds()
+
+
+async def test_transfer_out_retries_on_version_conflict_then_gives_up() -> None:
+    ok = FakeConn(
+        {
+            "select_inventory": [inv_row(9, 70, 50), inv_row(10, 70, 50)],
+            "update_inventory": [None, row(20, 0, 11)],
+            "insert_movement": [MOVEMENT_OK],
+        }
+    )
+    assert (await ship(ok, 50)).version == 11
+    assert 9 in ok.calls_of("update_inventory")[0].args
+    assert 10 in ok.calls_of("update_inventory")[1].args
+    bad = FakeConn(
+        {"select_inventory": [inv_row(v, 70, 50) for v in range(9, 30)], "update_inventory": [None]}
+    )
+    with pytest.raises(AppError) as exc:
+        await ship(bad, 50)
+    assert exc.value.error_code == ErrorCode.VERSION_CONFLICT
+    assert len(bad.calls_of("update_inventory")) == 1 + VERSION_CONFLICT_MAX_RETRIES
+
+
+async def test_transfer_out_ignores_lock_mode_none() -> None:
+    # LOCK_MODE=none chỉ dành cho xuất thường (make race-unsafe); xuất điều chuyển luôn dùng version
+    conn = FakeConn(
+        {
+            "select_inventory": [inv_row(9, 70, 50)],
+            "update_inventory": [row(20, 0, 10)],
+            "insert_movement": [MOVEMENT_OK],
+        }
+    )
+    await ship(conn, 50, lock_mode=LockMode.NONE)
+    assert re.search(r"version\s*=\s*\$\d", conn.calls_of("update_inventory")[0].sql)
+
+
+async def test_transfer_out_duplicate_movement_raises() -> None:
+    conn = FakeConn(
+        {
+            "select_inventory": [inv_row(9, 70, 50)],
+            "update_inventory": [row(20, 0, 10)],
+            "insert_movement": [None],
+        }
+    )
+    with pytest.raises(stock.DuplicateRequest):
+        await ship(conn, 50)
+
+
+async def test_consume_rejects_movement_types_it_does_not_handle() -> None:
+    with pytest.raises(ValueError):
+        await ship(FakeConn(), 5, movement_type=MovementType.INBOUND)
+
+
+async def test_default_movement_type_is_unchanged_outbound() -> None:
+    conn = FakeConn(
+        {
+            "select_inventory": [inv_row(3)],
+            "update_inventory": [row(15, 0, 4)],
+            "insert_movement": [MOVEMENT_OK],
+        }
+    )
+    await consume(conn, qty=5)  # không truyền movement_type, ref_type vẫn như cũ
+    assert "OUTBOUND" in conn.calls_of("insert_movement")[0].str_args
+
+
+def test_stock_result_is_readable_like_a_row() -> None:
+    r = stock.StockResult(qty_on_hand=5, qty_reserved=1, version=2)
+    assert (r["qty_on_hand"], r["qty_reserved"], r["version"]) == (5, 1, 2)
+
+
+def test_consume_signature_accepts_transfer_out_call_from_saga() -> None:
+    inspect.signature(stock.consume).bind(
+        None, dc_id=1, product_id=1, qty=1, request_id=TRANSFER_REQ, created_by="x",
+        ref_type=RefType.TRANSFER, movement_type=MovementType.TRANSFER_OUT,
+    )  # fmt: skip
+
+
+# ---------------------------------------------------------------------------
+# add_stock(movement_type=TRANSFER_IN): nhận điều chuyển tại kho đích (F10.d bước 3)
+# ---------------------------------------------------------------------------
+async def receive(conn: FakeConn, qty: int = 50, **over):  # type: ignore[no-untyped-def]
+    args = dict(
+        dc_id=DC_ID, product_id=PRODUCT_ID, qty=qty, request_id=TRANSFER_REQ, created_by=WHO,
+        ref_type=RefType.TRANSFER, movement_type=MovementType.TRANSFER_IN,
+    )  # fmt: skip
+    return await stock.add_stock(conn, **{**args, **over})
+
+
+async def test_transfer_in_adds_quantity_then_writes_transfer_in_movement() -> None:
+    conn = FakeConn({"upsert_inventory": [row(60, 0, 5)], "insert_movement": [MOVEMENT_OK]})
+    result = await receive(conn, 50)
+    assert conn.kinds() == [
+        "upsert_inventory",
+        "insert_movement",
+    ]  # inventory trước sổ (khóa ngoại)
+    upsert = conn.calls_of("upsert_inventory")[0]
+    assert "qty_on_hand = inventory.qty_on_hand + excluded.qty_on_hand" in upsert.sql
+    assert not re.search(r"version\s*=", upsert.sql)
+    assert 50 in upsert.args
+    call = conn.calls_of("insert_movement")[0]
+    assert "TRANSFER_IN" in call.str_args and "TRANSFER" in call.str_args
+    assert 50 in call.args and str(TRANSFER_REQ) in call.str_args
+    assert "INBOUND" not in call.str_args and "RECEIPT" not in call.str_args
+    assert result["qty_on_hand"] == 60 and result.version == 5  # đọc được cả hai kiểu
+
+
+async def test_transfer_in_ref_type_defaults_to_transfer_and_records_ref_id() -> None:
+    conn = FakeConn({"upsert_inventory": [row(60, 0, 5)], "insert_movement": [MOVEMENT_OK]})
+    await stock.add_stock(
+        conn, dc_id=DC_ID, product_id=PRODUCT_ID, qty=50, request_id=TRANSFER_REQ,
+        created_by=WHO, movement_type=MovementType.TRANSFER_IN, ref_id=TRANSFER_ID,
+    )  # fmt: skip
+    call = conn.calls_of("insert_movement")[0]
+    assert "TRANSFER" in call.str_args and TRANSFER_ID in call.str_args
+
+
+async def test_transfer_in_duplicate_movement_raises() -> None:
+    conn = FakeConn({"upsert_inventory": [row(60, 0, 5)], "insert_movement": [None]})
+    with pytest.raises(stock.DuplicateRequest):
+        await receive(conn, 50)
+
+
+async def test_add_stock_rejects_movement_types_it_does_not_handle() -> None:
+    with pytest.raises(ValueError):
+        await receive(FakeConn(), 5, movement_type=MovementType.OUTBOUND)
+
+
+async def test_add_stock_default_is_still_inbound_receipt() -> None:
+    conn = FakeConn({"upsert_inventory": [row(20, 0, 2)], "insert_movement": [MOVEMENT_OK]})
+    await stock.add_stock(
+        conn, dc_id=DC_ID, product_id=PRODUCT_ID, qty=10, request_id=REQ,
+        created_by=WHO, ref_type="RECEIPT",
+    )  # fmt: skip
+    call = conn.calls_of("insert_movement")[0]
+    assert "INBOUND" in call.str_args and "RECEIPT" in call.str_args
+
+
+def test_add_stock_signature_accepts_transfer_in_call_from_saga() -> None:
+    inspect.signature(stock.add_stock).bind(
+        None, dc_id=1, product_id=1, qty=1, request_id=TRANSFER_REQ, created_by="x",
+        ref_type=RefType.TRANSFER, movement_type=MovementType.TRANSFER_IN,
+    )  # fmt: skip
 
 
 # ---------------------------------------------------------------------------

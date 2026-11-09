@@ -39,6 +39,10 @@ class StockResult:
     version: int
     duplicate: bool = False
 
+    def __getitem__(self, key: str) -> Any:
+        """Đọc kiểu row["qty_on_hand"], như dòng RETURNING mà reserve và release trả về."""
+        return getattr(self, key)
+
 
 class DuplicateRequest(Exception):
     """F10.a bước 3: stock_movement đã có request_id này; router ROLLBACK và trả duplicate."""
@@ -112,12 +116,13 @@ async def _insert_movement(
     qty_change: int,
     ref_type: RefType,
     created_by: str,
+    ref_id: str | None = None,
 ) -> None:
     """F10.a bước 3. Không ghi được dòng nào là trùng request_id (chốt chặn cuối)."""
     row = await conn.fetchrow(
         "INSERT INTO stock_movement "
-        "(request_id, dc_id, product_id, movement_type, qty_change, ref_type, created_by) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7) "
+        "(request_id, dc_id, product_id, movement_type, qty_change, ref_type, ref_id, created_by) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
         "ON CONFLICT (request_id) DO NOTHING RETURNING movement_id",
         request_id,
         dc_id,
@@ -125,6 +130,7 @@ async def _insert_movement(
         movement_type,
         qty_change,
         ref_type,
+        ref_id,
         created_by,
     )
     if row is None:
@@ -139,9 +145,22 @@ async def add_stock(
     qty: int,
     request_id: UUID,
     created_by: str,
-    ref_type: RefType,
+    ref_type: RefType | None = None,
+    movement_type: MovementType = MovementType.INBOUND,
+    ref_id: str | None = None,
 ) -> StockResult:
-    """F10.a bước 2 (nhập) và bước 3. inventory trước stock_movement vì khóa ngoại."""
+    """Nhập kho rồi ghi sổ (F10.a bước 2 nhánh nhập, bước 3). inventory trước sổ vì khóa ngoại.
+
+    movement_type INBOUND (mặc định): ref_type mặc định RECEIPT.
+    movement_type TRANSFER_IN (F10.d bước 3, nhận điều chuyển): ref_type mặc định TRANSFER.
+    ref_id là mã chứng từ ghi vào sổ (db.md 2.8), ví dụ transfer_id.
+    """
+    if movement_type == MovementType.INBOUND:
+        ref_type = ref_type or RefType.RECEIPT
+    elif movement_type == MovementType.TRANSFER_IN:
+        ref_type = ref_type or RefType.TRANSFER
+    else:
+        raise ValueError(f"add_stock không xử lý movement_type {movement_type}")
     row = await conn.fetchrow(
         "INSERT INTO inventory (dc_id, product_id, qty_on_hand) VALUES ($1, $2, $3) "
         "ON CONFLICT (dc_id, product_id) DO UPDATE "
@@ -157,10 +176,11 @@ async def add_stock(
         request_id=request_id,
         dc_id=dc_id,
         product_id=product_id,
-        movement_type=MovementType.INBOUND,
+        movement_type=movement_type,
         qty_change=qty,
         ref_type=ref_type,
         created_by=created_by,
+        ref_id=ref_id,
     )
     return _result(row)
 
@@ -176,6 +196,13 @@ _SQL_RESERVE = (
     "UPDATE inventory SET qty_reserved = qty_reserved + $1, updated_at = now() "
     "WHERE dc_id = $2 AND product_id = $3 AND version = $4 "
     "AND qty_on_hand - qty_reserved >= $1 "
+    "RETURNING qty_on_hand, qty_reserved, version"
+)
+_SQL_TRANSFER_OUT = (
+    "UPDATE inventory SET qty_on_hand = qty_on_hand - $1, qty_reserved = qty_reserved - $1, "
+    "updated_at = now() "
+    "WHERE dc_id = $2 AND product_id = $3 AND version = $4 "
+    "AND qty_reserved >= $1 "
     "RETURNING qty_on_hand, qty_reserved, version"
 )
 _SQL_RELEASE = (
@@ -285,23 +312,44 @@ async def consume(
     qty: int,
     request_id: UUID,
     created_by: str,
-    ref_type: RefType,
+    ref_type: RefType | None = None,
     lock_mode: LockMode = LockMode.OPTIMISTIC,
+    movement_type: MovementType = MovementType.OUTBOUND,
+    ref_id: str | None = None,
 ) -> StockResult:
-    """F10.a bước 2 (xuất) và bước 3, khóa lạc quan theo version (db.md 2.7)."""
-    if lock_mode == LockMode.NONE:
-        row = await _overwrite_unsafe(conn, dc_id, product_id, qty)
+    """Xuất kho, khóa lạc quan theo version (db.md 2.7), rồi ghi sổ (F10.a bước 2, 3).
+
+    movement_type OUTBOUND (mặc định): trừ qty_on_hand, điều kiện khả dụng; ref_type mặc định ISSUE;
+    lock_mode NONE chỉ áp dụng cho nhánh này (make race-unsafe).
+    movement_type TRANSFER_OUT (F10.c bước 2): trừ cả qty_on_hand và qty_reserved cùng qty, điều
+    kiện qty_reserved >= qty; ref_type mặc định TRANSFER; giữ chỗ không đủ: 422 INSUFFICIENT_STOCK.
+    ref_id là mã chứng từ ghi vào sổ (db.md 2.8), ví dụ transfer_id.
+    """
+    if movement_type == MovementType.TRANSFER_OUT:
+        row = await _update_optimistic(
+            conn, _SQL_TRANSFER_OUT, dc_id, product_id, qty, _reserved_too_small
+        )
+        ref_type = ref_type or RefType.TRANSFER
+    elif movement_type == MovementType.OUTBOUND:
+        if lock_mode == LockMode.NONE:
+            row = await _overwrite_unsafe(conn, dc_id, product_id, qty)
+        else:
+            row = await _update_optimistic(
+                conn, _SQL_CONSUME, dc_id, product_id, qty, _insufficient
+            )
+        ref_type = ref_type or RefType.ISSUE
     else:
-        row = await _update_optimistic(conn, _SQL_CONSUME, dc_id, product_id, qty, _insufficient)
+        raise ValueError(f"consume không xử lý movement_type {movement_type}")
     await _insert_movement(
         conn,
         request_id=request_id,
         dc_id=dc_id,
         product_id=product_id,
-        movement_type=MovementType.OUTBOUND,
+        movement_type=movement_type,
         qty_change=-qty,
         ref_type=ref_type,
         created_by=created_by,
+        ref_id=ref_id,
     )
     return _result(row)
 
