@@ -145,9 +145,22 @@ async def add_stock(
     qty: int,
     request_id: UUID,
     created_by: str,
-    ref_type: RefType,
+    ref_type: RefType | None = None,
+    movement_type: MovementType = MovementType.INBOUND,
+    ref_id: str | None = None,
 ) -> StockResult:
-    """F10.a bước 2 (nhập) và bước 3. inventory trước stock_movement vì khóa ngoại."""
+    """Nhập kho rồi ghi sổ (F10.a bước 2 nhánh nhập, bước 3). inventory trước sổ vì khóa ngoại.
+
+    movement_type INBOUND (mặc định): ref_type mặc định RECEIPT.
+    movement_type TRANSFER_IN (F10.d bước 3, nhận điều chuyển): ref_type mặc định TRANSFER.
+    ref_id là mã chứng từ ghi vào sổ (db.md 2.8), ví dụ transfer_id.
+    """
+    if movement_type == MovementType.INBOUND:
+        ref_type = ref_type or RefType.RECEIPT
+    elif movement_type == MovementType.TRANSFER_IN:
+        ref_type = ref_type or RefType.TRANSFER
+    else:
+        raise ValueError(f"add_stock không xử lý movement_type {movement_type}")
     row = await conn.fetchrow(
         "INSERT INTO inventory (dc_id, product_id, qty_on_hand) VALUES ($1, $2, $3) "
         "ON CONFLICT (dc_id, product_id) DO UPDATE "
@@ -163,10 +176,11 @@ async def add_stock(
         request_id=request_id,
         dc_id=dc_id,
         product_id=product_id,
-        movement_type=MovementType.INBOUND,
+        movement_type=movement_type,
         qty_change=qty,
         ref_type=ref_type,
         created_by=created_by,
+        ref_id=ref_id,
     )
     return _result(row)
 
@@ -211,14 +225,21 @@ def _insufficient(dc_id: int, product_id: int, qty: int, row: asyncpg.Record | N
     )
 
 
-def _nothing_to_release(
+def _reserved_too_small(
     dc_id: int, product_id: int, qty: int, row: asyncpg.Record | None
 ) -> AppError:
+    """Giữ chỗ không đủ cho thao tác: 422 INSUFFICIENT_STOCK (F10.c bước 2).
+
+    Không dùng 409 INVALID_STATE: F10.c, F10.g dành mã đó cho phiếu đã CANCELLED/đã xuất hàng.
+    """
     reserved = 0 if row is None else row["qty_reserved"]
+    log.warning(
+        "INSUFFICIENT_STOCK kho %s SKU %s: cần %s, đang giữ %s", dc_id, product_id, qty, reserved
+    )
     return AppError(
-        ErrorCode.INVALID_STATE,
-        "Số lượng giữ chỗ nhỏ hơn số cần nhả hoặc xuất điều chuyển",
-        {"dc_id": dc_id, "product_id": product_id, "requested": qty, "reserved": reserved},
+        ErrorCode.INSUFFICIENT_STOCK,
+        "Số lượng giữ chỗ không đủ",
+        {"product_id": product_id, "requested": qty, "reserved": reserved},
     )
 
 
@@ -301,12 +322,12 @@ async def consume(
     movement_type OUTBOUND (mặc định): trừ qty_on_hand, điều kiện khả dụng; ref_type mặc định ISSUE;
     lock_mode NONE chỉ áp dụng cho nhánh này (make race-unsafe).
     movement_type TRANSFER_OUT (F10.c bước 2): trừ cả qty_on_hand và qty_reserved cùng qty, điều
-    kiện qty_reserved >= qty; ref_type mặc định TRANSFER; giữ chỗ không đủ thì INVALID_STATE.
+    kiện qty_reserved >= qty; ref_type mặc định TRANSFER; giữ chỗ không đủ: 422 INSUFFICIENT_STOCK.
     ref_id là mã chứng từ ghi vào sổ (db.md 2.8), ví dụ transfer_id.
     """
     if movement_type == MovementType.TRANSFER_OUT:
         row = await _update_optimistic(
-            conn, _SQL_TRANSFER_OUT, dc_id, product_id, qty, _nothing_to_release
+            conn, _SQL_TRANSFER_OUT, dc_id, product_id, qty, _reserved_too_small
         )
         ref_type = ref_type or RefType.TRANSFER
     elif movement_type == MovementType.OUTBOUND:
@@ -349,9 +370,9 @@ async def release(
 ) -> asyncpg.Record:
     """F10.e bước 2: nhả qty thùng giữ chỗ. Trả dòng RETURNING như reserve.
 
-    Nhả quá số đang giữ hoặc chưa có dòng tồn: INVALID_STATE (409).
+    Nhả quá số đang giữ hoặc chưa có dòng tồn: INSUFFICIENT_STOCK (422).
     """
-    return await _update_optimistic(conn, _SQL_RELEASE, dc_id, product_id, qty, _nothing_to_release)
+    return await _update_optimistic(conn, _SQL_RELEASE, dc_id, product_id, qty, _reserved_too_small)
 
 
 async def write_outbox(

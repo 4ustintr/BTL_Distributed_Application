@@ -327,19 +327,20 @@ async def test_transfer_out_ref_type_defaults_to_transfer_and_ref_id_is_recorded
     assert "TRANSFER" in call.str_args and TRANSFER_ID in call.str_args  # db.md 2.8 ref_id
 
 
-async def test_transfer_out_reserved_too_small_is_invalid_state() -> None:
+async def test_transfer_out_reserved_too_small_is_insufficient_stock() -> None:
     conn = FakeConn({"select_inventory": [inv_row(9, 70, 10)], "update_inventory": [None]})
     with pytest.raises(AppError) as exc:
         await ship(conn, 50)
-    assert exc.value.error_code == ErrorCode.INVALID_STATE and exc.value.status_code == 409
+    # F10.c bước 2 và /ship: 422 INSUFFICIENT_STOCK; 409 INVALID_STATE chỉ dành cho phiếu CANCELLED
+    assert exc.value.error_code == ErrorCode.INSUFFICIENT_STOCK and exc.value.status_code == 422
     assert "insert_movement" not in conn.kinds()
 
 
-async def test_transfer_out_without_inventory_row_is_invalid_state() -> None:
+async def test_transfer_out_without_inventory_row_is_insufficient_stock() -> None:
     conn = FakeConn({"select_inventory": [None]})
     with pytest.raises(AppError) as exc:
         await ship(conn, 50)
-    assert exc.value.error_code == ErrorCode.INVALID_STATE
+    assert exc.value.error_code == ErrorCode.INSUFFICIENT_STOCK
     assert "update_inventory" not in conn.kinds()
 
 
@@ -414,6 +415,73 @@ def test_consume_signature_accepts_transfer_out_call_from_saga() -> None:
     inspect.signature(stock.consume).bind(
         None, dc_id=1, product_id=1, qty=1, request_id=TRANSFER_REQ, created_by="x",
         ref_type=RefType.TRANSFER, movement_type=MovementType.TRANSFER_OUT,
+    )  # fmt: skip
+
+
+# ---------------------------------------------------------------------------
+# add_stock(movement_type=TRANSFER_IN): nhận điều chuyển tại kho đích (F10.d bước 3)
+# ---------------------------------------------------------------------------
+async def receive(conn: FakeConn, qty: int = 50, **over):  # type: ignore[no-untyped-def]
+    args = dict(
+        dc_id=DC_ID, product_id=PRODUCT_ID, qty=qty, request_id=TRANSFER_REQ, created_by=WHO,
+        ref_type=RefType.TRANSFER, movement_type=MovementType.TRANSFER_IN,
+    )  # fmt: skip
+    return await stock.add_stock(conn, **{**args, **over})
+
+
+async def test_transfer_in_adds_quantity_then_writes_transfer_in_movement() -> None:
+    conn = FakeConn({"upsert_inventory": [row(60, 0, 5)], "insert_movement": [MOVEMENT_OK]})
+    result = await receive(conn, 50)
+    assert conn.kinds() == [
+        "upsert_inventory",
+        "insert_movement",
+    ]  # inventory trước sổ (khóa ngoại)
+    upsert = conn.calls_of("upsert_inventory")[0]
+    assert "qty_on_hand = inventory.qty_on_hand + excluded.qty_on_hand" in upsert.sql
+    assert not re.search(r"version\s*=", upsert.sql)
+    assert 50 in upsert.args
+    call = conn.calls_of("insert_movement")[0]
+    assert "TRANSFER_IN" in call.str_args and "TRANSFER" in call.str_args
+    assert 50 in call.args and str(TRANSFER_REQ) in call.str_args
+    assert "INBOUND" not in call.str_args and "RECEIPT" not in call.str_args
+    assert result["qty_on_hand"] == 60 and result.version == 5  # đọc được cả hai kiểu
+
+
+async def test_transfer_in_ref_type_defaults_to_transfer_and_records_ref_id() -> None:
+    conn = FakeConn({"upsert_inventory": [row(60, 0, 5)], "insert_movement": [MOVEMENT_OK]})
+    await stock.add_stock(
+        conn, dc_id=DC_ID, product_id=PRODUCT_ID, qty=50, request_id=TRANSFER_REQ,
+        created_by=WHO, movement_type=MovementType.TRANSFER_IN, ref_id=TRANSFER_ID,
+    )  # fmt: skip
+    call = conn.calls_of("insert_movement")[0]
+    assert "TRANSFER" in call.str_args and TRANSFER_ID in call.str_args
+
+
+async def test_transfer_in_duplicate_movement_raises() -> None:
+    conn = FakeConn({"upsert_inventory": [row(60, 0, 5)], "insert_movement": [None]})
+    with pytest.raises(stock.DuplicateRequest):
+        await receive(conn, 50)
+
+
+async def test_add_stock_rejects_movement_types_it_does_not_handle() -> None:
+    with pytest.raises(ValueError):
+        await receive(FakeConn(), 5, movement_type=MovementType.OUTBOUND)
+
+
+async def test_add_stock_default_is_still_inbound_receipt() -> None:
+    conn = FakeConn({"upsert_inventory": [row(20, 0, 2)], "insert_movement": [MOVEMENT_OK]})
+    await stock.add_stock(
+        conn, dc_id=DC_ID, product_id=PRODUCT_ID, qty=10, request_id=REQ,
+        created_by=WHO, ref_type="RECEIPT",
+    )  # fmt: skip
+    call = conn.calls_of("insert_movement")[0]
+    assert "INBOUND" in call.str_args and "RECEIPT" in call.str_args
+
+
+def test_add_stock_signature_accepts_transfer_in_call_from_saga() -> None:
+    inspect.signature(stock.add_stock).bind(
+        None, dc_id=1, product_id=1, qty=1, request_id=TRANSFER_REQ, created_by="x",
+        ref_type=RefType.TRANSFER, movement_type=MovementType.TRANSFER_IN,
     )  # fmt: skip
 
 
@@ -554,19 +622,20 @@ async def test_release_update_lowers_reserved_conditionally() -> None:
     assert conn.kinds() == ["select_inventory", "update_inventory"]
 
 
-async def test_release_more_than_reserved_is_invalid_state() -> None:
-    # H1: không nhả được quá số đang giữ -> 409 INVALID_STATE, không để CHECK của DB báo lỗi 500
+async def test_release_more_than_reserved_is_insufficient_stock() -> None:
+    # Không nhả được quá số đang giữ -> 422 INSUFFICIENT_STOCK, không để CHECK của DB báo lỗi 500.
+    # Không dùng 409 INVALID_STATE: F10.g dành mã đó cho "phiếu đã xuất hàng".
     conn = FakeConn({"select_inventory": [inv_row(3, 100, 5)], "update_inventory": [None]})
     with pytest.raises(AppError) as exc:
         await stock.release(conn, DC_ID, PRODUCT_ID, 10)
-    assert exc.value.error_code == ErrorCode.INVALID_STATE and exc.value.status_code == 409
+    assert exc.value.error_code == ErrorCode.INSUFFICIENT_STOCK and exc.value.status_code == 422
 
 
-async def test_release_without_inventory_row_is_invalid_state() -> None:
-    conn = FakeConn({"select_inventory": [None]})  # H2
+async def test_release_without_inventory_row_is_insufficient_stock() -> None:
+    conn = FakeConn({"select_inventory": [None]})
     with pytest.raises(AppError) as exc:
         await stock.release(conn, DC_ID, PRODUCT_ID, 10)
-    assert exc.value.error_code == ErrorCode.INVALID_STATE
+    assert exc.value.error_code == ErrorCode.INSUFFICIENT_STOCK
     assert "update_inventory" not in conn.kinds()
 
 
