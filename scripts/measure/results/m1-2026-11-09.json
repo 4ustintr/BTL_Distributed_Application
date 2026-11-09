@@ -1,0 +1,13 @@
+{
+    "count":  200,
+    "p50_ms":  525.403,
+    "p95_ms":  903.04,
+    "max_ms":  990.435,
+    "started_at":  "2026-11-09T07:22:36.048585+00:00",
+    "environment":  "single Docker host; standard infra compose; port-only local overrides and TCP routing",
+    "source":  "200 real Node API outbound calls through Debezium and Kafka; 100 ms interval",
+    "node_api_validation_refs":  [
+                                     "66a413a",
+                                     "ba1cf85"
+                                 ]
+}
