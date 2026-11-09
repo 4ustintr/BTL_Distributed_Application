@@ -1,4 +1,4 @@
-"""Replay Worker (F9 bảng pending_txn, F10.i) – phần HQ của TC14, TC16 và make seed. Không cần CSDL.
+"""Unit test Replay Worker (F9 bảng pending_txn, F10.i), hỗ trợ TC14, TC16, make seed. Không CSDL.
 
 Kho giả bằng httpx.MockTransport trả đúng định dạng F6 /replay, /recovery/complete.
 """
@@ -243,6 +243,29 @@ async def test_tc16_rejected_row_records_error_and_continues() -> None:
     assert t_bad.error_msg is not None and "INSUFFICIENT_STOCK" in t_bad.error_msg
     assert t_next.status == PendingTxnStatus.APPLIED
     assert store.dc_status[DC_TRUNG] == DcStatus.ONLINE
+
+
+# ---------------------------------------------------------------------------
+# 4xx khác 422: dừng vòng, giữ PENDING, log ERROR (Minh Danh chốt)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("status", [400, 401, 404])
+async def test_other_4xx_logs_error_with_txn_and_code(
+    status: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    """4xx khác 422: giữ PENDING, dừng vòng, log ERROR kèm txn_id và error_code."""
+    t1, t2 = txn(TxnType.INBOUND, 30, 1), txn(TxnType.OUTBOUND, 10, 2)
+    store = FakeReplayStore({DC_TRUNG: DcStatus.RECOVERING}, [t1, t2])
+    node = FakeNode()
+    node.replies = {
+        str(t1.txn_id): httpx.Response(status, json=error_body("VALIDATION_ERROR", "x"))
+    }
+    with caplog.at_level("ERROR", logger="hq-api.replay"):
+        await worker_for(store, node).tick()
+    assert (t1.status, t2.status) == (PendingTxnStatus.PENDING, PendingTxnStatus.PENDING)
+    assert len(node.replayed) == 1 and node.complete_calls == 0
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert len(errors) == 1
+    assert str(t1.txn_id) in errors[0] and "VALIDATION_ERROR" in errors[0]
 
 
 # ---------------------------------------------------------------------------

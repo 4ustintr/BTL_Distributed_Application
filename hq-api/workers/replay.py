@@ -68,6 +68,15 @@ def error_message(resp: httpx.Response) -> str:
         return f"HTTP {resp.status_code}: {resp.text}"[:ERROR_MSG_MAX]
 
 
+def error_code_of(resp: httpx.Response) -> str | None:
+    """error_code trong thân lỗi F5; None nếu thân không đúng dạng."""
+    try:
+        code = resp.json()["error_code"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    return code if isinstance(code, str) else None
+
+
 def classify(resp: httpx.Response) -> Outcome:
     """F10.i bước 2: phân loại phản hồi của kho."""
     if resp.status_code == 200:
@@ -243,6 +252,15 @@ class ReplayWorker:
             msg = error_message(resp)
             await self.store.mark_rejected(row.txn_id, msg)
             log.warning("Kho %s: replay %s bị từ chối: %s", dc_id, row.txn_id, msg)
+        elif 400 <= resp.status_code < 500:
+            # 4xx khác 422: không tự sửa được bằng gửi lại, cần người xem (Minh Danh chốt mục 12)
+            log.error(
+                "Kho %s: replay txn_id=%s trả %s error_code=%s, giữ PENDING, dừng vòng",
+                dc_id,
+                row.txn_id,
+                resp.status_code,
+                error_code_of(resp),
+            )
         elif outcome is Outcome.STOP:
             log.warning("Kho %s: replay %s trả %s, dừng vòng", dc_id, row.txn_id, resp.status_code)
         return outcome
