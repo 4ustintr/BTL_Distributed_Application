@@ -55,7 +55,20 @@ def make(*goals: str) -> None:
 async def reset_stack() -> Target:
     # Mandatory TCs fail if reset/setup fails; there is no private-hostname skip gate.
     await asyncio.to_thread(make_reset)
-    return target()
+    configured = target()
+    db = await asyncpg.connect(configured.hq_db)
+    try:
+        # make seed waits for HTTP commits; CDC delivery may still be in flight.
+        await wait_for(
+            lambda: db.fetchval(
+                "SELECT COUNT(*) FROM inventory_snapshot "
+                "WHERE product_id = 1 AND dc_id IN (1, 2, 3) AND last_version >= 1"
+            ),
+            lambda count: count == 3,
+        )
+    finally:
+        await db.close()
+    return configured
 
 
 async def wait_for(
@@ -95,6 +108,10 @@ def kafka_probe() -> Consumer:
 
 
 async def wait_caught_up(probe: Consumer) -> None:
+    metadata = await asyncio.to_thread(probe.list_topics, TOPIC_INVENTORY, timeout=5)
+    topic = metadata.topics[TOPIC_INVENTORY]
+    assert topic.error is None, topic.error
+    assert set(topic.partitions) == set(range(TOPIC_PARTITIONS)), "F8 requires three partitions"
     partitions = [TopicPartition(TOPIC_INVENTORY, index) for index in range(TOPIC_PARTITIONS)]
 
     async def fetch() -> bool:

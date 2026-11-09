@@ -29,20 +29,21 @@ async def test_tc10_redelivery(demo_ids) -> None:
         node = await asyncpg.connect(node_db_url(1))
         try:
             # Test emitter only. All schema/roles/connector/topic are from infra/.
-            await node.execute(
+            inserted = await node.execute(
                 """INSERT INTO outbox_event
                    (event_id, aggregate_type, aggregate_id, event_type, payload)
-                   SELECT $1, $2, '1:1', $3, jsonb_build_object(
-                     'event_id', $1::text, 'event_type', $3::text, 'source_dc', 1,
+                   SELECT $1::uuid, $2::varchar, '1:1', $3::varchar, jsonb_build_object(
+                     'event_id', ($1::uuid)::text, 'event_type', $3::varchar, 'source_dc', 1,
                      'occurred_at', clock_timestamp(), 'product_id', 1,
                      'qty_on_hand', qty_on_hand, 'qty_reserved', qty_reserved,
-                     'version', version, 'request_id', $1::text, 'ref_type', $4::text)
+                     'version', version, 'request_id', ($1::uuid)::text, 'ref_type', $4::text)
                    FROM inventory WHERE dc_id = 1 AND product_id = 1""",
                 event_id,
                 AggregateType.INVENTORY,
                 EventType.INVENTORY_CHANGED,
                 RefType.RECEIPT,
             )
+            assert inserted == "INSERT 0 1", "make reset must seed dc1 inventory"
         finally:
             await node.close()
         await wait_for(
