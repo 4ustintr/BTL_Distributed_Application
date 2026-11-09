@@ -103,8 +103,28 @@ restart-connector-dc2:
 	bash infra/scripts/restart-connector.sh dc2-outbox
 
 # Số đo M2, M4 (docs/tests.md mục 5), xem scripts/measure/README.md
+# Tham số thêm: make measure-failover ARGS="--only m2 --runs 5 --out ket-qua.json"
+ARGS ?=
 measure-failover:
-	@echo "TODO: $@ (goi python scripts/measure/m2_m4.py, xem scripts/measure/README.md)"
+	python scripts/measure/m2_m4.py $(ARGS)
 
-race race-unsafe check-invariant replay-again bench-cdc:
-	@echo "TODO: $@ (xem docs/spec.md mục F12)"
+# ---- Tranh chấp đồng thời và bất biến (F12) ---------------------------------------------------
+# Máy B: 2 lệnh xuất 30 thùng cùng lúc vào kho Bắc (REQ_RACE_1, REQ_RACE_2).
+race:
+	bash scripts/race.sh
+
+# Máy B: khởi động lại node-api-dc1 với LOCK_MODE=none rồi bắn như trên; xong chạy make reset.
+race-unsafe:
+	bash scripts/race.sh unsafe
+
+# Máy A: GET /invariant, in 4 số và chênh lệch. SKU khác: make check-invariant P=2
+check-invariant:
+	@P=$(P) bash scripts/check-invariant.sh
+
+# Máy A: gọi lại /replay kho Trung với REQ_KB3_IN, REQ_KB3_OUT; phải trả duplicate (KB3 bước 12).
+replay-again:
+	bash scripts/replay-again.sh
+
+# M1 (docs/tests.md mục 5), máy A: make bench-cdc ARGS="DC=2 COUNT=200 OUT=m1.json"
+bench-cdc:
+	env $(ARGS) bash scripts/measure/bench-cdc.sh

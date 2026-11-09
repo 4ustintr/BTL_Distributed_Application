@@ -241,7 +241,7 @@ Một phiếu điều chuyển nằm ở 2 node với cùng transfer\_id do HQ c
 | from\_dc\_id | SMALLINT | NOT NULL, FK → dc | DC xuất |
 | to\_dc\_id | SMALLINT | NOT NULL, FK → dc, CHECK (to\_dc\_id \<\> from\_dc\_id) | DC nhận |
 | direction | VARCHAR(8) | NOT NULL, CHECK IN ('OUTBOUND','INBOUND') | OUTBOUND khi node là from\_dc, INBOUND khi node là to\_dc |
-| status | VARCHAR(15) | NOT NULL, DEFAULT 'CREATED', CHECK IN ('CREATED','SHIPPED','RECEIVED','CANCELLED') | Bản OUTBOUND do kho nguồn đổi khi xuất hàng hoặc khi nhận lệnh hủy; bản INBOUND do kho đích đổi khi nhận hàng, và được HQ đồng bộ qua /sync-status |
+| status | VARCHAR(15) | NOT NULL, DEFAULT 'CREATED', CHECK IN ('CREATED','SHIPPED','RECEIVED','CANCELLED') | Bản OUTBOUND do kho nguồn đổi khi xuất hàng hoặc khi nhận lệnh hủy, và được HQ đồng bộ sang RECEIVED qua /sync-status khi kho đích đã nhận; bản INBOUND do kho đích đổi khi nhận hàng, và được HQ đồng bộ sang SHIPPED hoặc CANCELLED qua /sync-status |
 | cancel\_reason | VARCHAR(30) | CHECK IN ('DECLINED','INSUFFICIENT\_STOCK','TIMEOUT') | Lý do hủy |
 | note | TEXT |  | Ghi chú |
 | created\_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Thời điểm tạo |
@@ -360,7 +360,7 @@ Trạng thái được lưu ở ba nơi, mỗi nơi một vai trò:
 
 Bốn quy tắc giữ trạng thái đúng:
 
-1. Ghi trước, gọi sau: HQ ghi phiếu CREATED vào transfer\_summary rồi mới gửi Transfer Notice tới hai kho. Nếu một lệnh gọi xuống kho vẫn lỗi sau khi thử lại, HQ gọi /cancel cho kho nguồn (an toàn kể cả khi kho chưa nhận notice) và chỉ chuyển phiếu CANCELLED khi kho nguồn xác nhận. Nếu /cancel cũng lỗi, phiếu giữ CREATED để HQ hủy lại bằng nút Hủy phiếu khi kho liên lạc được; nhờ vậy kho nguồn không giữ chỗ mãi cho một phiếu đã hủy. Bản nộp không có tác vụ chạy nền tự gửi lại hay tự hủy theo thời gian (xem Giới hạn ở thẻ Tổng quan).  
+1. Ghi trước, gọi sau: HQ ghi phiếu CREATED vào transfer\_summary rồi mới gửi Transfer Notice tới hai kho. Nếu kho trả lỗi (trừ 422 ở kho nguồn) hoặc lệnh gọi vẫn lỗi mạng sau khi thử lại, HQ gọi /cancel cho kho nguồn (an toàn kể cả khi kho chưa nhận notice) và chỉ chuyển phiếu CANCELLED khi kho nguồn xác nhận. Nếu /cancel cũng lỗi, phiếu giữ CREATED để HQ hủy lại bằng nút Hủy phiếu khi kho liên lạc được; nhờ vậy kho nguồn không giữ chỗ mãi cho một phiếu đã hủy. Bản nộp không có tác vụ chạy nền tự gửi lại hay tự hủy theo thời gian (xem Giới hạn ở thẻ Tổng quan).  
 2. Trạng thái chỉ đi tới: lệnh cập nhật có điều kiện WHERE status \= trạng thái liền trước (CREATED trước SHIPPED, SHIPPED trước RECEIVED; CANCELLED chỉ từ CREATED). Callback trùng không cập nhật được dòng nào và được bỏ qua.  
 3. Một nơi ghi trạng thái: chỉ HQ API ghi transfer\_summary; kho báo HQ bằng callback HTTP (/shipped, /received). Callback lỗi thì kho trả 503 cho WMS để nhân viên bấm lại; bấm lại an toàn vì kho trả duplicate và gửi lại callback. Lịch sử được ghi theo quy tắc ở mục 2.13.  
 4. Kho nguồn quyết định việc hủy: mọi yêu cầu hủy (kho đích từ chối, quá thời gian chờ) đều đi qua HQ, và HQ gọi kho nguồn trước. Kho nguồn chỉ hủy khi bản OUTBOUND còn CREATED: nhả giữ chỗ, chuyển CANCELLED, trả 200\. Nếu đã SHIPPED, kho nguồn trả 409 INVALID\_STATE và HQ trả 409 cho bên yêu cầu: hàng đã rời kho nên kho đích phải nhận rồi tạo phiếu trả nếu cần. Chỉ khi kho nguồn đồng ý, HQ mới ghi CANCELLED vào transfer\_summary và đồng bộ xuống kho đích. Bước xuất hàng là bước then chốt (pivot) của Saga: trước nó mọi bước đều bù được; sau nó chỉ còn các bước đi tiếp, được thử lại tới khi thành công.
