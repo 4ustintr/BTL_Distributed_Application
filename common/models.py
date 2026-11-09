@@ -253,11 +253,15 @@ class FailoverRequest(_Model):
 
 
 class FailoverResponse(_Model):
-    """200 của /failover: {"txn_id", "status": "PENDING", "provisional_qty"} (F7)."""
+    """200 của /failover: {"txn_id", "status", "provisional_qty", "duplicate"} (F7, F10.h).
+
+    Gửi trùng request_id: duplicate = True, status là trạng thái hiện tại của dòng pending_txn.
+    """
 
     txn_id: UUID
     status: PendingTxnStatus
     provisional_qty: int
+    duplicate: bool = False
 
 
 class DashboardInventoryItem(_Model):

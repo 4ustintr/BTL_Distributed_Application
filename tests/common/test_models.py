@@ -5,9 +5,10 @@ import uuid
 import pytest
 from pydantic import ValidationError
 
-from common.constants import EventType, NodeMode, RefType, TransferStatus
+from common.constants import EventType, NodeMode, PendingTxnStatus, RefType, TransferStatus
 from common.models import (
     CreateTransferRequest,
+    FailoverResponse,
     InboundRequest,
     InventoryEventPayload,
     NodeHealthResponse,
@@ -144,3 +145,22 @@ def test_json_dump_shapes() -> None:
         "version": 2,
         "duplicate": False,
     }
+
+
+def test_failover_response_duplicate(demo_ids: dict[str, str]) -> None:
+    """F7, F10.h: duplicate mặc định False; gửi trùng trả status hiện tại kèm duplicate=True."""
+    txn_id = demo_ids["REQ_KB3_IN"]
+    first = FailoverResponse(
+        txn_id=txn_id, status=PendingTxnStatus.PENDING, provisional_qty=65
+    ).model_dump(mode="json")
+    assert first == {
+        "txn_id": txn_id,
+        "status": "PENDING",
+        "provisional_qty": 65,
+        "duplicate": False,
+    }
+    again = FailoverResponse.model_validate(
+        {"txn_id": txn_id, "status": "APPLIED", "provisional_qty": 65, "duplicate": True}
+    )
+    assert again.duplicate is True
+    assert again.status is PendingTxnStatus.APPLIED

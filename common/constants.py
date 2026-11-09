@@ -10,6 +10,7 @@ from enum import StrEnum
 ENV_HOST_A_IP = "HOST_A_IP"  # F2 – chung
 ENV_HOST_B_IP = "HOST_B_IP"  # F2 – chung
 ENV_INTERNAL_KEY = "INTERNAL_KEY"  # F2 – chung, khóa cho lệnh gọi nội bộ HQ <-> kho
+ENV_POSTGRES_PASSWORD = "POSTGRES_PASSWORD"  # F2 – chung, mật khẩu các role CSDL
 ENV_DC_ID = "DC_ID"  # F2 – Node API, WMS
 ENV_NODE_DB_URL = "NODE_DB_URL"  # F2 – Node API
 ENV_HQ_URL = "HQ_URL"  # F2 – Node API, WMS
@@ -130,7 +131,7 @@ class CancelReason(StrEnum):
 
     DECLINED = "DECLINED"  # db.md 2.5 – kho đích từ chối
     INSUFFICIENT_STOCK = "INSUFFICIENT_STOCK"  # db.md 2.5 – kho nguồn không giữ chỗ được
-    TIMEOUT = "TIMEOUT"  # db.md 2.5 – nút Hủy phiếu hoặc lỗi mạng khi tạo phiếu
+    TIMEOUT = "TIMEOUT"  # db.md 2.5, F10.f – nút Hủy phiếu, hoặc lỗi khi tạo phiếu (trừ 422)
 
 
 class TransferEventSource(StrEnum):
@@ -258,6 +259,7 @@ HEALTH_CHECK_INTERVAL_S = 2.0  # F11, F10.j – chu kỳ health check của HQ
 HEALTH_CHECK_TIMEOUT_S = 1.0  # F11, F10.j – timeout GET /health
 OFFLINE_MISSED_THRESHOLD = 3  # F11, F9 – số lần lỗi liên tiếp để coi là OFFLINE
 WMS_HEALTH_INTERVAL_S = 2.0  # F11 – chu kỳ WMS kiểm tra Node API (WMS là JS, giữ để đối chiếu)
+WMS_HEALTH_TIMEOUT_S = 1.0  # F11 – timeout GET /health của WMS tới Node API (WMS là JS)
 WMS_FAILOVER_MISSED = 2  # F11, F9 – số lần lỗi để WMS chuyển FAILOVER (WMS là JS)
 FDW_CONNECT_TIMEOUT_S = 3  # F11, F3 – connect_timeout của foreign server
 FDW_QUERY_TIMEOUT_S = 5.0  # F11, F3 – timeout mỗi truy vấn FDW ở tầng ứng dụng

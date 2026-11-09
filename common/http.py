@@ -85,7 +85,12 @@ class InternalClient:
                 attempt += 1
                 log.warning(
                     "%s %s%s lỗi (%s), thử lại lần %d/%d",
-                    method, self.base_url, path, type(exc).__name__, attempt, retries,
+                    method,
+                    self.base_url,
+                    path,
+                    type(exc).__name__,
+                    attempt,
+                    retries,
                 )
                 await asyncio.sleep(self.retry_interval)
 
@@ -135,8 +140,6 @@ def internal_key_guard(
         path = getattr(route, "path", None)
         if path is None or (request.method, normalize_route_path(path)) not in routes:
             return
-        check_internal_key(
-            request.headers.get(INTERNAL_KEY_HEADER), request.app.state.internal_key
-        )
+        check_internal_key(request.headers.get(INTERNAL_KEY_HEADER), request.app.state.internal_key)
 
     return guard

@@ -24,6 +24,7 @@ Mọi script demo và test dùng chung các mã dưới đây, nên log, Dashboa
 | Hai lệnh tranh chấp | REQ\_RACE\_1, REQ\_RACE\_2: mỗi lệnh xuất 30 thùng ở kho Bắc | KB1 bước 2, TC03, TC04 (tùy chọn) |
 | Xuất cho đại lý ở kho Trung | REQ\_KB2\_OUT: xuất 5 thùng | KB2 bước 1 |
 | Ghi hộ ở kho Trung | REQ\_KB3\_IN (nhập 30), REQ\_KB3\_OUT (xuất 10), REQ\_KB3\_OUT\_BIG (xuất 100\) | KB3 bước 3–5, make replay-again |
+| Replay bị từ chối ở kho Trung | REQ\_TC16\_OUT\_LOCAL (kho Trung tự xuất 30), REQ\_TC16\_OUT\_FAILOVER (ghi hộ xuất 30\) | TC16 |
 | Giá trị của các REQ\_\* | UUID cố định, khai báo một lần trong scripts/demo\_ids.env và tests/fixtures.py | Script demo, test, Dashboard |
 
 ## 3\. Kết quả chuẩn theo từng bước demo
@@ -54,7 +55,7 @@ Quy ước: mỗi ô kho ghi tồn/khả dụng, với khả dụng \= qty\_on\_
 
 ## 4\. Bộ test case
 
-Mỗi test case là một hàm pytest đặt tên test\_tcXX\_\<tên\_ngắn\> trong thư mục tests/, dùng dữ liệu và mã cố định ở mục 2, và tự gọi make reset trước khi chạy (trừ khi ghi khác). Cột Kết quả mong đợi là điều kiện assert; cột Thành phần cho biết service nào phải làm đúng để test xanh, dùng khi chia việc. Test có ghi (tùy chọn) chỉ làm khi còn thời gian; 10 test còn lại là bắt buộc để demo. make test chạy 10 test bắt buộc, make test-all chạy tất cả.
+Mỗi test case là một hàm pytest đặt tên test\_tcXX\_\<tên\_ngắn\> trong thư mục tests/, dùng dữ liệu và mã cố định ở mục 2, và tự gọi make reset trước khi chạy (trừ khi ghi khác). Cột Kết quả mong đợi là điều kiện assert; cột Thành phần cho biết service nào phải làm đúng để test xanh, dùng khi chia việc. Test có ghi (tùy chọn) chỉ làm khi còn thời gian; 10 test còn lại là bắt buộc để demo. make test chạy 10 test bắt buộc, make test-all chạy tất cả. Test tích hợp (cần container thật) chỉ chạy khi HQ và kho đặt trên cùng một máy (HOST\_A\_IP \= HOST\_B\_IP); hai biến khác nhau thì test tích hợp bị bỏ qua.
 
 | ID | Kiểm tra | Cách chạy | Kết quả mong đợi (assert) | Thành phần |
 | :---- | :---- | :---- | :---- | :---- |
@@ -73,7 +74,7 @@ Mỗi test case là một hàm pytest đặt tên test\_tcXX\_\<tên\_ngắn\> t
 | TC13 (tùy chọn) | FDW khi kho treo | make pause-dc2, gọi chế độ realtime | Phản hồi 3–5 giây; Trung source=offline; Bắc, Nam có số | hq-api |
 | TC14 | Ghi hộ và đẩy lại | kill-dc2; failover nhập 30, xuất 10; start-dc2 | Trung 60/60 (40 \+ 30 − 10); 2 pending\_txn APPLIED; dc\_status ONLINE | hq-api, node-api, consumer |
 | TC15 | Failover khi kho còn sống | Gọi /failover cho kho đang ONLINE | 409 DC\_NOT\_OFFLINE; không có dòng pending\_txn mới | hq-api |
-| TC16 | Replay bị từ chối | Dừng hq-consumer; kho Trung xuất 30 (thật còn 10, snapshot vẫn 40); kill-dc2; failover xuất 30; start-dc2; bật lại hq-consumer | pending\_txn REJECTED, error\_msg chứa INSUFFICIENT\_STOCK; Trung còn 10 | hq-api, node-api |
+| TC16 | Replay bị từ chối | Dừng hq-consumer; kho Trung xuất 30 bằng REQ\_TC16\_OUT\_LOCAL (thật còn 10, snapshot vẫn 40); kill-dc2; failover xuất 30 bằng REQ\_TC16\_OUT\_FAILOVER; start-dc2; bật lại hq-consumer | pending\_txn REJECTED, error\_msg chứa INSUFFICIENT\_STOCK; Trung còn 10 | hq-api, node-api |
 | TC17 (tùy chọn) | Kho khởi động khi HQ chết | docker stop hq-api, khởi động lại node-api-dc1 | /health trả mode RECOVERING; gọi tay POST /recovery/complete thì chuyển ONLINE | node-api |
 | TC18 (tùy chọn) | Đối soát phát hiện sửa tay | UPDATE inventory bằng psql, rồi bấm Đối soát trên Dashboard | Dashboard báo lệch giữa snapshot và số đọc qua FDW; version của dòng tăng 1 | db, hq-api |
 | TC19 (tùy chọn) | HQ sập, sự kiện không mất | Kịch bản dự phòng ở thẻ Kịch bản demo, chạy sau KB3 | Consumer lag về 0; snapshot Bắc \= 15 | consumer |
@@ -96,6 +97,6 @@ Khi trình bày, vẽ biểu đồ phân phối cho M1 và biểu đồ theo N c
 ## 6\. Tiêu chí hoàn thành
 
 * Một chức năng chỉ được merge khi các test liên quan ở mục 4 chạy xanh và không làm đỏ test khác.  
-* Trước buổi demo, make test chạy xanh hai lần liên tiếp trên đúng hai máy demo.  
+* Trước buổi demo, make test (gồm test tích hợp) chạy xanh hai lần liên tiếp trên một máy (HOST\_A\_IP \= HOST\_B\_IP); trên đúng hai máy demo, script demo chạy trọn 3 kịch bản hai lần liên tiếp, mọi dòng trạng thái khớp bảng kết quả chuẩn ở mục 3.  
 * Chạy thử trọn kịch bản từ make reset tới bước KB3-12 ít nhất một lần; mọi dòng trạng thái khớp bảng mục 3\.  
 * Số đo M1, M2 (bắt buộc) và M4 (nên có) ở mục 5 được ghi vào báo cáo kèm ngày đo và cấu hình máy.

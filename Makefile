@@ -1,9 +1,11 @@
 # Lệnh theo spec F12. Các lệnh còn TODO sẽ được hoàn thiện dần.
 TEST_DIRS = tests/common tests/node_api tests/hq_api tests/consumer
+# Test JavaScript của giao diện (node --test); thư mục chưa có file .js/.mjs thì bỏ qua
+JS_TEST_DIRS = tests/wms tests/dashboard
 
 .PHONY: up-hq up-dc down-hq down-dc ps logs reset seed race race-unsafe check-invariant \
         pause-dc2 unpause-dc2 kill-dc2 start-dc2 restart-connector-dc2 replay-again bench-cdc \
-        test test-all test-ci lint
+        test test-all test-ci test-js lint measure-failover
 
 # Docker Compose (F2, F12). Biến đọc từ .env ở gốc repo; đổi file bằng: make up-hq ENV_FILE=...
 ENV_FILE ?= .env
@@ -43,6 +45,12 @@ lint:
 # CI: không cần container
 test-ci:
 	@for d in $(TEST_DIRS); do pytest -m "not integration" $$d || [ $$? -eq 5 ] || exit 1; done
+
+# CI: test JS của wms/ và dashboard/ bằng node --test (không cần npm)
+test-js:
+	@files=$$(find $(JS_TEST_DIRS) -type f \( -name '*.js' -o -name '*.mjs' \) 2>/dev/null); \
+	if [ -z "$$files" ]; then echo "test-js: chua co file test trong $(JS_TEST_DIRS), bo qua"; \
+	else node --test $$files; fi
 
 # 10 test bắt buộc (cần hệ thống đang chạy)
 test:
@@ -94,5 +102,22 @@ unpause-dc2:
 restart-connector-dc2:
 	bash infra/scripts/restart-connector.sh dc2-outbox
 
-race race-unsafe check-invariant replay-again bench-cdc:
+# Số đo M2, M4 (docs/tests.md mục 5), xem scripts/measure/README.md
+measure-failover:
+	@echo "TODO: $@ (goi python scripts/measure/m2_m4.py, xem scripts/measure/README.md)"
+
+# ---- Tranh chấp đồng thời và bất biến (F12) ---------------------------------------------------
+# Máy B: 2 lệnh xuất 30 thùng cùng lúc vào kho Bắc (REQ_RACE_1, REQ_RACE_2).
+race:
+	bash scripts/race.sh
+
+# Máy B: khởi động lại node-api-dc1 với LOCK_MODE=none rồi bắn như trên; xong chạy make reset.
+race-unsafe:
+	bash scripts/race.sh unsafe
+
+# Máy A: GET /invariant, in 4 số và chênh lệch. SKU khác: make check-invariant P=2
+check-invariant:
+	@P=$(P) bash scripts/check-invariant.sh
+
+replay-again bench-cdc:
 	@echo "TODO: $@ (xem docs/spec.md mục F12)"

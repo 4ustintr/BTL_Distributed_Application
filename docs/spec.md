@@ -32,7 +32,7 @@ Thẻ này là hợp đồng kỹ thuật cho cả nhóm và cho công cụ sinh
 
 Biến môi trường, đặt trong file .env của mỗi máy:
 
-* Chung: HOST\_A\_IP, HOST\_B\_IP, INTERNAL\_KEY (khóa dùng chung cho lệnh gọi nội bộ giữa HQ và kho).  
+* Chung: HOST\_A\_IP, HOST\_B\_IP, INTERNAL\_KEY (khóa dùng chung cho lệnh gọi nội bộ giữa HQ và kho), POSTGRES\_PASSWORD (mật khẩu của các role CSDL; compose dùng để ghép HQ\_DB\_URL, NODE\_DB\_URL và cấu hình connector Debezium).  
 * Node API: DC\_ID, NODE\_DB\_URL, HQ\_URL \= http\://HOST\_A\_IP:8000, LOCK\_MODE \= optimistic (giá trị none chỉ dùng cho make race-unsafe).  
 * HQ API và Consumer: HQ\_DB\_URL, NODE\_URLS \= {"1": "http\://HOST\_B\_IP:8001", "2": "http\://HOST\_B\_IP:8002", "3": "http\://HOST\_B\_IP:8003"}, KAFKA\_BOOTSTRAP \= kafka:9092.  
 * WMS: DC\_ID, NODE\_URL, HQ\_URL.
@@ -149,9 +149,9 @@ Khởi động lại connector sau khi kho lên lại: POST http\://HOST\_A\_IP:
 
 | HTTP | error\_code | Khi nào |
 | :---- | :---- | :---- |
-| 400 | VALIDATION\_ERROR | Thiếu trường, qty ≤ 0, SKU không tồn tại trong danh mục |
+| 400 | VALIDATION\_ERROR | Thiếu trường, qty ≤ 0, lệnh ghi có SKU (trong body) không tồn tại trong danh mục |
 | 401 | UNAUTHORIZED | Sai X-Internal-Key |
-| 404 | NOT\_FOUND | Không có phiếu hoặc SKU |
+| 404 | NOT\_FOUND | Không có phiếu; lệnh đọc có SKU (trong path hoặc query) không tồn tại trong danh mục |
 | 409 | VERSION\_CONFLICT | Hết 3 lần thử lại do xung đột version |
 | 409 | INVALID\_STATE | Thao tác không hợp lệ với trạng thái hiện tại của phiếu |
 | 409 | DC\_NOT\_OFFLINE | Gọi failover khi HQ vẫn thấy kho còn sống |
@@ -168,12 +168,12 @@ Khởi động lại connector sau khi kho lên lại: POST http\://HOST\_A\_IP:
 | GET /inventory?product\_id=1 | WMS |  | 200 {"items": \[{"product\_id": 1, "qty\_on\_hand": 100, "qty\_reserved": 50, "available": 50, "version": 3}\]} |
 | POST /inbound | WMS | {"request\_id", "product\_id", "qty", "ref\_type": "RECEIPT", "created\_by"} | 200 {"qty\_on\_hand", "version", "duplicate"}; 400; 503 DC\_RECOVERING |
 | POST /outbound | WMS | {"request\_id", "product\_id", "qty", "ref\_type": "ISSUE", "created\_by"} | 200; 409 VERSION\_CONFLICT; 422; 503 DC\_RECOVERING |
-| POST /transfers/notice | HQ | {"transfer\_id", "transfer\_code", "from\_dc\_id", "to\_dc\_id", "direction", "items": \[{"line\_no": 1, "product\_id": 1, "qty": 50}\]} | 200 {"status": "CREATED", "duplicate"}; 422 khi kho nguồn không đủ hàng để giữ chỗ |
+| POST /transfers/notice | HQ | {"transfer\_id", "transfer\_code", "from\_dc\_id", "to\_dc\_id", "direction", "items": \[{"line\_no": 1, "product\_id": 1, "qty": 50}\]} | 200 {"status": "CREATED", "duplicate"}; 400 VALIDATION\_ERROR khi SKU hoặc kho trong phiếu không có trong danh mục; 422 khi kho nguồn không đủ hàng để giữ chỗ |
 | POST /transfers/{id}/ship | WMS kho nguồn | {"created\_by"} | 200 {"status": "SHIPPED"}; 409 INVALID\_STATE |
 | POST /transfers/{id}/receive | WMS kho đích | {"created\_by"} | 200 {"status": "RECEIVED"}; 409 INVALID\_STATE nếu phiếu chưa SHIPPED |
 | POST /transfers/{id}/decline | WMS kho đích | {"reason"} | Chuyển tiếp đồng bộ tới HQ /decline, trả nguyên kết quả của HQ |
 | POST /transfers/{id}/cancel | HQ, gọi kho nguồn | {"reason": "DECLINED"} | 200 {"status": "CANCELLED"}, kể cả khi đã hủy từ trước; 409 INVALID\_STATE nếu đã SHIPPED |
-| POST /transfers/{id}/sync-status | HQ | {"status": "SHIPPED"} | 200; chỉ cập nhật khi trạng thái tiến lên theo thứ tự CREATED \< SHIPPED \< RECEIVED (CANCELLED chỉ ghi khi đang CREATED), ngược lại bỏ qua và vẫn trả 200 |
+| POST /transfers/{id}/sync-status | HQ | {"status": "SHIPPED"} | 200, không có thân phản hồi. Chỉ nhận SHIPPED và CANCELLED cho bản INBOUND, RECEIVED cho bản OUTBOUND; chỉ cập nhật khi phiếu đang ở trạng thái liền trước (CREATED trước SHIPPED, SHIPPED trước RECEIVED, CANCELLED chỉ từ CREATED); cặp khác, kho chưa có phiếu hoặc đã đồng bộ thì bỏ qua và vẫn trả 200 |
 | POST /replay | HQ | {"request\_id", "txn\_type": "OUTBOUND", "product\_id", "qty", "created\_by"} | 200 {"qty\_on\_hand", "duplicate"}; 422; nhận ở cả hai chế độ |
 | POST /recovery/complete | HQ |  | 200 {"mode": "ONLINE"} |
 
@@ -190,7 +190,7 @@ Sau khi commit bước ship hoặc receive, Node API gọi HQ /shipped hoặc /r
 | POST /transfers/{id}/shipped | Node API kho nguồn | {"shipped\_at"} | 200 |
 | POST /transfers/{id}/received | Node API kho đích | {"received\_at"} | 200 |
 | POST /transfers/{id}/decline | Node API kho đích | {"reason"} | 200 {"status": "CANCELLED"}; 409 INVALID\_STATE nếu kho nguồn đã xuất. Dashboard cũng gọi endpoint này cho nút Hủy phiếu, với reason \= TIMEOUT |
-| POST /failover/dc/{dc\_id}/inbound | WMS | {"request\_id", "product\_id", "qty", "created\_by"} | 200 {"txn\_id", "status": "PENDING", "provisional\_qty": 65}; 409 DC\_NOT\_OFFLINE |
+| POST /failover/dc/{dc\_id}/inbound | WMS | {"request\_id", "product\_id", "qty", "created\_by"} | 200 {"txn\_id", "status": "PENDING", "provisional\_qty": 65, "duplicate": false}; gửi trùng request\_id trả 200 kèm duplicate: true, status hiện tại của dòng và provisional\_qty tính lại (F10.h); 409 DC\_NOT\_OFFLINE |
 | POST /failover/dc/{dc\_id}/outbound | WMS | Như trên | 200; 409 DC\_NOT\_OFFLINE; 422 nếu khả dụng tạm tính không đủ |
 | GET /dashboard/inventory?mode=snapshot\&product\_id=1 | Dashboard | mode \= snapshot hoặc realtime | 200 {"items": \[{"dc\_id", "qty\_on\_hand", "qty\_reserved", "qty\_in\_transit", "source", "as\_of"}\]}; source là snapshot, realtime, offline hoặc provisional |
 | GET /dc-status | Dashboard |  | 200 \[{"dc\_id", "status", "updated\_at"}\] |
@@ -240,7 +240,7 @@ InventoryChangedDirect (dự phòng, bản nộp chưa sinh) có cùng các trư
 }
 ```
 
-TransferCreated, TransferReceived, TransferCancelled dùng cùng cấu trúc với mẫu trên; chỉ khác event\_type, status và trường thời gian tương ứng.
+TransferCreated, TransferReceived, TransferCancelled dùng cùng cấu trúc với mẫu trên; chỉ khác event\_type, status và trường thời gian tương ứng. Sự kiện phiếu sinh khi /sync-status đổi bản phiếu ở kho lấy shipped\_at, received\_at, cancel\_reason từ dòng transfer\_order của kho đó, nên có thể null.
 
 ## F9. Máy trạng thái
 
@@ -260,6 +260,7 @@ TransferCreated, TransferReceived, TransferCancelled dùng cùng cấu trúc v�
 | ONLINE, RECOVERING | OFFLINE | Health Monitor | missed\_count ≥ 3 |
 | OFFLINE | RECOVERING | Health Monitor | Health check thành công và (mode \= RECOVERING hoặc kho còn pending\_txn PENDING) |
 | OFFLINE | ONLINE | Health Monitor | Health check thành công, mode \= ONLINE, không còn PENDING (kho chỉ mất mạng, không khởi động lại) |
+| ONLINE | RECOVERING | Health Monitor | Health check thành công và mode \= RECOVERING |
 | RECOVERING | ONLINE | Replay Worker | Không còn PENDING và /recovery/complete trả 200 |
 
 ### Chế độ của Node API
@@ -283,8 +284,10 @@ TransferCreated, TransferReceived, TransferCancelled dùng cùng cấu trúc v�
 
 | Từ | Sang | Điều kiện | Hành vi |
 | :---- | :---- | :---- | :---- |
+| NORMAL | WAITING | Health check thành công và Node API báo mode \= RECOVERING | Khóa nút nhập, xuất; hiện "kho đang đồng bộ" |
 | NORMAL | FAILOVER | 2 lần GET /health tới Node API thất bại | Gửi nhập, xuất tới HQ /failover; gặp 409 DC\_NOT\_OFFLINE thì hiện thông báo và gửi lại sau 2 giây |
 | FAILOVER | WAITING | Node API trả lời với mode \= RECOVERING | Khóa nút nhập, xuất; hiện "kho đang đồng bộ" |
+| WAITING | FAILOVER | 2 lần GET /health tới Node API thất bại liên tiếp | Như NORMAL → FAILOVER |
 | FAILOVER, WAITING | NORMAL | Node API trả lời với mode \= ONLINE | Gọi lại Node API như bình thường |
 
 WMS sinh request\_id một lần cho mỗi thao tác của người dùng và giữ nguyên khi gửi lại, kể cả khi chuyển từ Node API sang HQ.
@@ -313,7 +316,7 @@ Ghi chú: inventory phải được cập nhật trước stock\_movement vì st
 ### c. Xuất điều chuyển tại kho nguồn (POST /transfers/{id}/ship)
 
 1. UPDATE transfer\_order SET status \= 'SHIPPED', shipped\_at \= now() WHERE transfer\_id \= :id AND direction \= 'OUTBOUND' AND status \= 'CREATED'. Không cập nhật được: đã SHIPPED hoặc RECEIVED thì trả 200 duplicate và gửi lại callback /shipped; đã CANCELLED thì 409\.  
-2. Từng dòng: giảm qty\_on\_hand và qty\_reserved cùng một lượng; ghi stock\_movement TRANSFER\_OUT với request\_id tất định; đặt qty\_shipped \= qty\_requested.  
+2. Từng dòng: giảm qty\_on\_hand và qty\_reserved cùng một lượng (điều kiện version và qty\_reserved \>= số lượng xuất, thử lại tối đa 3 lần khi xung đột version); qty\_reserved không đủ thì ROLLBACK, trả 422 INSUFFICIENT\_STOCK; ghi stock\_movement TRANSFER\_OUT với request\_id tất định; đặt qty\_shipped \= qty\_requested.  
 3. Ghi InventoryChanged và TransferShipped, COMMIT, rồi gọi HQ /shipped.
 
 ### d. Nhận điều chuyển tại kho đích (POST /transfers/{id}/receive)
@@ -333,21 +336,22 @@ Ghi chú: inventory phải được cập nhật trước stock\_movement vì st
 
 1. Hai kho không cùng ONLINE thì trả 503, không tạo phiếu.  
 2. Một transaction: sinh transfer\_code \= 'TR-' \+ năm \+ '-' \+ số thứ tự 6 chữ số từ transfer\_code\_seq; INSERT transfer\_summary CREATED kèm items; ghi transfer\_event (NULL → CREATED, source HQ).  
-3. Gọi kho nguồn /transfers/notice. 422: chuyển phiếu CANCELLED với lý do INSUFFICIENT\_STOCK, ghi transfer\_event, trả 422 cho Dashboard. Lỗi mạng sau khi thử lại theo F5: gọi /cancel cho kho nguồn; chỉ khi /cancel trả 200 mới chuyển phiếu CANCELLED (lý do TIMEOUT) và trả 503\. /cancel cũng lỗi thì giữ phiếu CREATED, trả 503; nhân viên HQ bấm Hủy phiếu trên Dashboard khi kho liên lạc lại được (bước g), để kho nguồn không giữ chỗ mãi cho một phiếu đã hủy.  
-4. Gọi kho đích /transfers/notice. Lỗi mạng sau khi thử lại: gọi /cancel cho kho nguồn để nhả giữ chỗ, xử lý kết quả như bước 3\.
+3. Gọi kho nguồn /transfers/notice. 422: chuyển phiếu CANCELLED với lý do INSUFFICIENT\_STOCK, ghi transfer\_event, trả 422 cho Dashboard. Phản hồi lỗi khác (4xx khác 422, 5xx) hoặc lỗi mạng sau khi thử lại theo F5: gọi /cancel cho kho nguồn; chỉ khi /cancel trả 200 mới chuyển phiếu CANCELLED (lý do TIMEOUT), rồi trả nguyên lỗi của kho cho Dashboard, hoặc 503 DC\_UNREACHABLE nếu là lỗi mạng. /cancel cũng lỗi thì giữ phiếu CREATED, trả 503; nhân viên HQ bấm Hủy phiếu trên Dashboard khi kho liên lạc lại được (bước g), để kho nguồn không giữ chỗ mãi cho một phiếu đã hủy.  
+4. Gọi kho đích /transfers/notice. Phản hồi lỗi bất kỳ hoặc lỗi mạng sau khi thử lại: gọi /cancel cho kho nguồn để nhả giữ chỗ, xử lý kết quả như bước 3\.
 
 ### g. Kho đích từ chối hoặc HQ hủy phiếu, xử lý tại HQ (POST /transfers/{id}/decline)
 
 1. Gọi kho nguồn /cancel với lý do DECLINED (kho đích từ chối) hoặc TIMEOUT (nút Hủy phiếu trên Dashboard).  
 2. Kho nguồn trả 200: một transaction chuyển transfer\_summary sang CANCELLED (điều kiện status \= CREATED) và ghi transfer\_event; sau đó gọi kho đích /sync-status CANCELLED; trả 200\.  
-3. Kho nguồn trả 409: trả 409 INVALID\_STATE. Không gọi được kho nguồn: trả 503 DC\_UNREACHABLE, phiếu giữ nguyên.
+3. Kho nguồn trả 409 INVALID\_STATE (đã xuất hàng): trả 409 INVALID\_STATE. Kho nguồn trả lỗi khác (ví dụ 409 VERSION\_CONFLICT): trả nguyên cho bên gọi, phiếu giữ nguyên. Không gọi được kho nguồn: trả 503 DC\_UNREACHABLE, phiếu giữ nguyên.
 
 ### h. Ghi hộ tại HQ (POST /failover/dc/{dc\_id}/…)
 
-1. dc\_status của kho khác OFFLINE thì trả 409 DC\_NOT\_OFFLINE.  
-2. Đọc inventory\_snapshot của (dc\_id, product\_id) và các pending\_txn đang PENDING của kho đó; demo chỉ có một người thao tác nên không khóa dòng (xem Giới hạn).  
-3. Tính khả dụng tạm tính (Thiết kế CSDL, mục 2.4). Lệnh xuất không đủ thì ROLLBACK, trả 422\.  
-4. INSERT pending\_txn với txn\_id \= request\_id … ON CONFLICT (txn\_id) DO NOTHING, COMMIT, trả 200 kèm provisional\_qty.
+1. Kiểm tra trùng: txn\_id (\= request\_id) đã có trong pending\_txn thì trả 200 kèm duplicate: true, trạng thái hiện tại của dòng đó và provisional\_qty tính lại tại thời điểm trả lời (inventory\_snapshot cộng các pending\_txn đang PENDING của kho đó, Thiết kế CSDL, mục 2.4); không kiểm tra dc\_status và không kiểm tra hạn mức lại.  
+2. dc\_status của kho khác OFFLINE thì trả 409 DC\_NOT\_OFFLINE.  
+3. Đọc inventory\_snapshot của (dc\_id, product\_id) và các pending\_txn đang PENDING của kho đó; demo chỉ có một người thao tác nên không khóa dòng (xem Giới hạn).  
+4. Tính khả dụng tạm tính (Thiết kế CSDL, mục 2.4). Lệnh xuất không đủ thì ROLLBACK, trả 422\.  
+5. INSERT pending\_txn với txn\_id \= request\_id … ON CONFLICT (txn\_id) DO NOTHING, COMMIT, trả 200 kèm provisional\_qty.
 
 ### i. Replay Worker (mỗi 2 giây)
 
@@ -373,10 +377,11 @@ Ghi chú: inventory phải được cập nhật trước stock\_movement vì st
 | :---- | :---- | :---- |
 | Chu kỳ health check của HQ | 2 giây, timeout 1 giây | Health Monitor |
 | Số lần lỗi liên tiếp để coi là OFFLINE | 3 (khoảng 6 giây) | Health Monitor |
-| Chu kỳ và số lần lỗi để WMS chuyển failover | 2 giây, 2 lần (khoảng 4 giây) | WMS |
+| Chu kỳ và số lần lỗi để WMS chuyển failover | 2 giây, timeout 1 giây, 2 lần (khoảng 4 giây) | WMS |
 | Timeout kết nối FDW | 3 giây (connect\_timeout) | Foreign server |
 | Timeout mỗi truy vấn FDW ở tầng ứng dụng | 5 giây | HQ API |
 | Timeout và thử lại khi gọi giữa các service | 2 giây, tối đa 5 lần gọi, cách 2 giây | HQ API, Node API |
+| Timeout WMS gọi /ship, /receive, /decline | 20 giây (lớn hơn 18 giây, thời gian tối đa của chuỗi thử lại theo F5 khi kho gọi HQ) | WMS |
 | Số lần thử lại khi xung đột version | 3 | Node API |
 | Chu kỳ đối soát định kỳ | 60 giây (tùy chọn, xem F10.k) | HQ API |
 | Thời gian tối đa một vòng Replay Worker | 30 giây | HQ API |
