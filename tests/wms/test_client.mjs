@@ -2,20 +2,27 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-import * as client from "../../wms/js/client.js";
-import {createWmsClient, Message, Mode, newRequestId, nextMode} from "../../wms/js/client.js";
+import client from "../../wms/js/client.js";
 
+const {createWmsClient, Message, Mode, newRequestId, nextMode} = client;
 const CONFIG = {DC_ID: 2, NODE_URL: "http://b:8002", HQ_URL: "http://a:8000"};
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 const json = (status, body) => new Response(JSON.stringify(body), {status});
 const health = (mode) => json(200, {dc_id: 2, mode, db: "ok"});
 const down = () => Promise.reject(new TypeError("Failed to fetch"));
+const stockBody = (kind, qty) => ({
+  request_id: "2cb5d179-358d-5b52-8c39-0f1f4a1c167e",
+  product_id: 1,
+  qty,
+  ref_type: kind === "inbound" ? "RECEIPT" : "ISSUE",
+  created_by: "nv",
+});
 
-// Mạng giả: route(url, init) trả Response hoặc Promise bị từ chối
+// Mạng giả: route(url, init, calls) trả Response hoặc Promise bị từ chối
 function fakeClient(route) {
   const calls = [];
-  const client = createWmsClient(CONFIG, {
+  const wms = createWmsClient(CONFIG, {
     fetch: async (url, init = {}) => {
       calls.push({url, body: init.body ? JSON.parse(init.body) : undefined});
       return route(url, init, calls);
@@ -23,9 +30,18 @@ function fakeClient(route) {
     sleep: async () => {},
     log: () => {},
   });
-  return {client, calls};
+  return {wms, calls};
 }
 
+async function toFailover(wms) {
+  await wms.checkHealth();
+  await wms.checkHealth();
+  assert.equal(wms.getMode(), Mode.FAILOVER);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Bảng F9, hằng số, request_id
+// ---------------------------------------------------------------------------------------------
 test("bảng chuyển chế độ F9", () => {
   const fail = {ok: false};
   const online = {ok: true, mode: "ONLINE"};
@@ -54,19 +70,11 @@ test("hằng số khớp common/constants.py (F11, F5)", () => {
   }
 });
 
-test("NORMAL mà kho báo RECOVERING thì WAITING; WAITING mà kho chết 2 lần thì FAILOVER", async () => {
-  let nodeState = "RECOVERING";
-  const {client: wms} = fakeClient(() => (nodeState === "DOWN" ? down() : health(nodeState)));
-  const seen = [];
-  wms.onModeChange((m) => seen.push(m));
-  await wms.checkHealth();
-  assert.equal(wms.getMode(), Mode.WAITING);
-  nodeState = "DOWN";
-  await wms.checkHealth();
-  assert.equal(wms.getMode(), Mode.WAITING);
-  await wms.checkHealth();
-  assert.equal(wms.getMode(), Mode.FAILOVER);
-  assert.deepEqual(seen, [Mode.WAITING, Mode.FAILOVER]);
+test("nạp được bằng <script> thường: gán window.WmsClient", () => {
+  const src = readFileSync(new URL("../../wms/js/client.js", import.meta.url), "utf8");
+  const self = {};
+  new Function("self", "module", src)(self, undefined);
+  assert.equal(typeof self.WmsClient.createWmsClient, "function");
 });
 
 test("request_id là UUID v4, kể cả khi không có crypto.randomUUID (http không bảo mật)", () => {
@@ -76,137 +84,131 @@ test("request_id là UUID v4, kể cả khi không có crypto.randomUUID (http k
   assert.notEqual(id, newRequestId(noRandomUuid));
 });
 
+// ---------------------------------------------------------------------------------------------
+// Health check -> chế độ
+// ---------------------------------------------------------------------------------------------
 test("2 lần health lỗi thì FAILOVER; kho báo RECOVERING thì WAITING; ONLINE thì NORMAL", async () => {
   let nodeState = "DOWN";
-  const {client} = fakeClient(() => (nodeState === "DOWN" ? down() : health(nodeState)));
+  const {wms} = fakeClient(() => (nodeState === "DOWN" ? down() : health(nodeState)));
   const seen = [];
-  client.onModeChange((m) => seen.push(m));
-  await client.checkHealth();
-  assert.equal(client.getMode(), Mode.NORMAL);
-  await client.checkHealth();
-  assert.equal(client.getMode(), Mode.FAILOVER);
+  wms.onModeChange((m) => seen.push(m));
+  await toFailover(wms);
   nodeState = "RECOVERING";
-  await client.checkHealth();
-  assert.equal(client.getMode(), Mode.WAITING);
+  await wms.checkHealth();
+  assert.equal(wms.getMode(), Mode.WAITING);
   nodeState = "ONLINE";
-  await client.checkHealth();
+  await wms.checkHealth();
   assert.deepEqual(seen, [Mode.FAILOVER, Mode.WAITING, Mode.NORMAL]);
 });
 
+test("NORMAL mà kho báo RECOVERING thì WAITING; WAITING mà kho chết 2 lần thì FAILOVER", async () => {
+  let nodeState = "RECOVERING";
+  const {wms} = fakeClient(() => (nodeState === "DOWN" ? down() : health(nodeState)));
+  await wms.checkHealth();
+  assert.equal(wms.getMode(), Mode.WAITING);
+  nodeState = "DOWN";
+  await wms.checkHealth();
+  assert.equal(wms.getMode(), Mode.WAITING);
+  await wms.checkHealth();
+  assert.equal(wms.getMode(), Mode.FAILOVER);
+});
+
 test("health trả 503 (CSDL kho lỗi) tính là lỗi", async () => {
-  const {client} = fakeClient(() => json(503, {dc_id: 2, mode: "ONLINE", db: "error"}));
-  await client.checkHealth();
-  await client.checkHealth();
-  assert.equal(client.getMode(), Mode.FAILOVER);
+  const {wms} = fakeClient(() => json(503, {dc_id: 2, mode: "ONLINE", db: "error"}));
+  await toFailover(wms);
 });
 
-test("NORMAL: gửi Node API đúng body F6", async () => {
-  const {client, calls} = fakeClient(() => json(200, {qty_on_hand: 35, version: 7, duplicate: false}));
-  const op = client.newOperation("outbound", {product_id: 1, qty: 5, created_by: "nv"});
-  const r = await client.submit(op);
-  assert.equal(r.via, "NODE");
-  assert.equal(r.status, 200);
-  assert.deepEqual(calls[0], {
-    url: "http://b:8002/outbound",
-    body: {request_id: op.request_id, product_id: 1, qty: 5, ref_type: "ISSUE", created_by: "nv"},
-  });
+// ---------------------------------------------------------------------------------------------
+// sendStock: cùng chữ ký và quy ước kết quả với api.sendStock của giao diện
+// ---------------------------------------------------------------------------------------------
+test("NORMAL: gửi Node API nguyên body F6", async () => {
+  const {wms, calls} = fakeClient(() => json(200, {qty_on_hand: 35, version: 7, duplicate: false}));
+  const r = await wms.sendStock("/outbound", stockBody("outbound", 5));
+  assert.deepEqual([r.status, r.ok, r.via, r.body.qty_on_hand], [200, true, "NODE", 35]);
+  assert.deepEqual(calls, [{url: "http://b:8002/outbound", body: stockBody("outbound", 5)}]);
 });
 
-test("FAILOVER: gặp 409 DC_NOT_OFFLINE thì báo và gửi lại cùng request_id tới HQ", async () => {
+test("FAILOVER: body F7 (bỏ ref_type); 409 DC_NOT_OFFLINE thì báo và gửi lại cùng request_id", async () => {
   let failoverCalls = 0;
-  const {client, calls} = fakeClient((url) => {
+  const {wms, calls} = fakeClient((url) => {
     if (url.endsWith("/health")) return down();
     failoverCalls += 1;
     if (failoverCalls === 1) return json(409, {error_code: "DC_NOT_OFFLINE", message: "", details: {}});
-    return json(200, {txn_id: "x", status: "PENDING", provisional_qty: 65});
+    return json(200, {txn_id: "x", status: "PENDING", provisional_qty: 65, duplicate: false});
   });
-  await client.checkHealth();
-  await client.checkHealth();
-  const op = client.newOperation("inbound", {product_id: 1, qty: 30, created_by: "nv"});
+  await toFailover(wms);
   const statuses = [];
-  const r = await client.submit(op, {onStatus: (m) => statuses.push(m)});
-  assert.equal(r.via, "HQ");
-  assert.equal(r.body.provisional_qty, 65);
+  const r = await wms.sendStock("/inbound", stockBody("inbound", 30), {onStatus: (m) => statuses.push(m)});
+  assert.deepEqual([r.status, r.via, r.body.provisional_qty], [200, "HQ", 65]);
   assert.deepEqual(statuses, [Message.CONFIRMING]);
   const posted = calls.filter((c) => c.url === "http://a:8000/failover/dc/2/inbound");
-  assert.equal(posted.length, 2);
-  assert.deepEqual(posted[0].body, {request_id: op.request_id, product_id: 1, qty: 30, created_by: "nv"});
-  assert.equal(posted[1].body.request_id, op.request_id);
+  const {ref_type, ...f7} = stockBody("inbound", 30);
+  assert.equal(ref_type, "RECEIPT");
+  assert.deepEqual(posted.map((c) => c.body), [f7, f7]);
 });
 
-test("kho chết giữa lúc gửi: chuyển sang HQ mà giữ nguyên request_id", async () => {
-  const {client, calls} = fakeClient((url) => {
-    if (url.startsWith("http://b:8002")) return down();
-    return json(200, {txn_id: "x", status: "PENDING", provisional_qty: 55});
-  });
-  const op = client.newOperation("outbound", {product_id: 1, qty: 10, created_by: "nv"});
-  const pending = client.submit(op);
-  await client.checkHealth();
-  await client.checkHealth(); // vòng health song song đưa WMS sang FAILOVER
-  const r = await pending;
-  assert.equal(r.via, "HQ");
+test("kho chết giữa lúc gửi: status 0; bấm lại sau khi FAILOVER thì đi HQ với đúng request_id", async () => {
+  const {wms, calls} = fakeClient((url) =>
+    url.startsWith("http://b:8002") ? down() : json(200, {txn_id: "x", status: "PENDING", provisional_qty: 55}));
+  const body = stockBody("outbound", 10);
+  const first = await wms.sendStock("/outbound", body);
+  assert.deepEqual([first.status, first.ok, first.via], [0, false, "NODE"]);
+  await toFailover(wms);
+  const again = await wms.sendStock("/outbound", body);
+  assert.deepEqual([again.status, again.via], [200, "HQ"]);
   const ids = calls.filter((c) => c.body).map((c) => c.body.request_id);
-  assert.ok(ids.length >= 2);
-  assert.ok(ids.every((id) => id === op.request_id));
+  assert.deepEqual(ids, [body.request_id, body.request_id]);
 });
 
-test("WAITING: không gửi lệnh nhập, xuất", async () => {
-  let state = "DOWN";
-  const {client, calls} = fakeClient(() => (state === "DOWN" ? down() : health(state)));
-  await client.checkHealth();
-  await client.checkHealth();
-  state = "RECOVERING";
-  await client.checkHealth();
+test("WAITING: không gửi, trả 503 DC_RECOVERING", async () => {
+  const {wms, calls} = fakeClient(() => health("RECOVERING"));
+  await wms.checkHealth();
   const before = calls.length;
-  const r = await client.submit(client.newOperation("inbound", {product_id: 1, qty: 1, created_by: "nv"}));
-  assert.deepEqual(r, {ok: false, reason: Mode.WAITING, message: Message.WAITING});
+  const r = await wms.sendStock("/inbound", stockBody("inbound", 1));
+  assert.deepEqual([r.status, r.body.error_code, r.via], [503, "DC_RECOVERING", "WMS"]);
   assert.equal(calls.length, before);
 });
 
 test("lỗi nghiệp vụ (422) trả nguyên cho giao diện, không gửi lại", async () => {
-  const {client, calls} = fakeClient(() => json(422, {error_code: "INSUFFICIENT_STOCK", message: "", details: {}}));
-  const r = await client.submit(client.newOperation("outbound", {product_id: 1, qty: 99, created_by: "nv"}));
-  assert.equal(r.status, 422);
-  assert.equal(r.body.error_code, "INSUFFICIENT_STOCK");
+  const {wms, calls} = fakeClient(() =>
+    json(422, {error_code: "INSUFFICIENT_STOCK", message: "", details: {requested: 99, available: 10}}));
+  const r = await wms.sendStock("/outbound", stockBody("outbound", 99));
+  assert.deepEqual([r.status, r.body.details.requested], [422, 99]);
   assert.equal(calls.length, 1);
+  await assert.rejects(() => wms.sendStock("/replay", stockBody("outbound", 1)));
 });
 
-test("ship/receive chờ lâu hơn 18 giây callback F5 (5 × 2 + 4 × 2) của kho", () => {
+// ---------------------------------------------------------------------------------------------
+// transferAction: ship, receive, decline
+// ---------------------------------------------------------------------------------------------
+test("ship/receive/decline chờ lâu hơn 18 giây của F5 (5 × 2 + 4 × 2)", () => {
   assert.equal(client.CALLBACK_RETRY_BUDGET_S, 18);
   assert.ok(client.TRANSFER_ACTION_TIMEOUT_S > 18);
 });
 
-test("transferAction: POST /transfers/{id}/ship đúng body F6, timeout dài, không tự gửi lại", async () => {
-  const seen = [];
-  const wms = createWmsClient(CONFIG, {
-    fetch: async (url, init = {}) => {
-      seen.push({url, body: init.body ? JSON.parse(init.body) : undefined, signal: init.signal});
-      return json(200, {status: "SHIPPED", duplicate: false});
-    },
-    sleep: async () => {},
-    log: () => {},
-  });
-  const r = await wms.transferAction("t-1", "ship", {created_by: "nv"});
-  assert.equal(r.status, 200);
-  assert.equal(r.body.status, "SHIPPED");
-  assert.deepEqual(seen.map((c) => [c.url, c.body]), [["http://b:8002/transfers/t-1/ship", {created_by: "nv"}]]);
+test("transferAction: đường dẫn và body F6 cho ship, receive, decline", async () => {
+  const {wms, calls} = fakeClient(() => json(200, {status: "SHIPPED", duplicate: false}));
+  for (const action of ["ship", "receive", "decline"]) {
+    const r = await wms.transferAction("t-1", action, {created_by: "nv"});
+    assert.deepEqual([r.status, r.via], [200, "NODE"]);
+  }
+  assert.deepEqual(calls, [
+    {url: "http://b:8002/transfers/t-1/ship", body: {created_by: "nv"}},
+    {url: "http://b:8002/transfers/t-1/receive", body: {created_by: "nv"}},
+    {url: "http://b:8002/transfers/t-1/decline", body: {reason: "DECLINED"}},
+  ]);
   await assert.rejects(() => wms.transferAction("t-1", "cancel", {created_by: "nv"}));
 });
 
-test("transferAction: 503 DC_UNREACHABLE trả nguyên; lỗi mạng báo bấm lại; FAILOVER thì chặn", async () => {
+test("transferAction: 503 DC_UNREACHABLE trả nguyên; lỗi mạng status 0; không tự gửi lại", async () => {
   let reply = () => json(503, {error_code: "DC_UNREACHABLE", message: "", details: {}});
-  const {client: wms, calls} = fakeClient((url) => (url.endsWith("/health") ? down() : reply()));
+  const {wms, calls} = fakeClient(() => reply());
   const r = await wms.transferAction("t-1", "receive", {created_by: "nv"});
   assert.deepEqual([r.status, r.body.error_code], [503, "DC_UNREACHABLE"]);
   reply = down;
-  const again = await wms.transferAction("t-1", "receive", {created_by: "nv"});
-  assert.deepEqual([again.ok, again.reason, again.message], [false, "UNREACHABLE", Message.TRANSFER_RETRY]);
-  assert.equal(calls.length, 2); // không tự gửi lại
-  await wms.checkHealth();
-  await wms.checkHealth();
-  assert.equal(wms.getMode(), Mode.FAILOVER);
-  const blocked = await wms.transferAction("t-1", "receive", {created_by: "nv"});
-  assert.deepEqual([blocked.ok, blocked.reason], [false, Mode.FAILOVER]);
+  const again = await wms.transferAction("t-1", "decline");
+  assert.deepEqual([again.status, again.ok], [0, false]);
+  assert.equal(calls.length, 2);
 });
 
 test("transferAction thật sự chờ tới TRANSFER_ACTION_TIMEOUT_S, không cắt ở 2 giây", async () => {
@@ -215,7 +217,7 @@ test("transferAction thật sự chờ tới TRANSFER_ACTION_TIMEOUT_S, không c
   globalThis.setTimeout = (fn, ms) => { delays.push(ms); return realSetTimeout(() => {}, 0); };
   try {
     const wms = createWmsClient(CONFIG, {fetch: async () => json(200, {status: "RECEIVED"}), sleep: async () => {}, log: () => {}});
-    await wms.transferAction("t-1", "receive", {created_by: "nv"});
+    await wms.transferAction("t-1", "decline");
   } finally {
     globalThis.setTimeout = realSetTimeout;
   }
