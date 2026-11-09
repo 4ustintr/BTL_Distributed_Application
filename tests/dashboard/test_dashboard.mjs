@@ -1,6 +1,16 @@
 ﻿import test from "node:test";
 import assert from "node:assert/strict";
 import {totals, sourceLabel, validateTransfer} from "../../dashboard/js/domain.js";
+import {requestHeaders} from "../../dashboard/js/http.js";
+
+test("GET polling avoids Content-Type preflight; JSON writes carry the header", () => {
+  assert.deepEqual(requestHeaders(), {});
+  assert.deepEqual(requestHeaders({method: "GET"}), {});
+  assert.deepEqual(requestHeaders({body: "{}"}), {"Content-Type": "application/json"});
+  assert.deepEqual(requestHeaders({body: "{}", headers: {"content-type": "text/plain"}}), {
+    "content-type": "text/plain",
+  });
+});
 
 test("provisional inventory is not added a second time on the client", () => {
   assert.deepEqual(totals([

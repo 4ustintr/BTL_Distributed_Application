@@ -12,7 +12,7 @@ ENV_FILE ?= .env
 # Script trong infra/scripts, scripts/ đọc ENV_FILE và CONNECT_URL từ môi trường.
 CONNECT_URL ?= http://localhost:8083
 export ENV_FILE CONNECT_URL
-COMPOSE_HQ = docker compose --env-file $(ENV_FILE) -f infra/compose.hq.yml
+COMPOSE_HQ = docker compose --env-file $(ENV_FILE) -f infra/compose.hq.yml -f consumer/compose.yml
 COMPOSE_DC = docker compose --env-file $(ENV_FILE) -f infra/compose.dc.yml
 # make logs S=hq-api  (để trống = mọi service); make logs N=200
 S ?=

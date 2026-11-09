@@ -8,7 +8,7 @@ import os
 import signal
 
 import asyncpg
-from confluent_kafka import Consumer, KafkaException, Producer
+from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 
 from common.constants import (
     CONSUMER_GROUP,
@@ -19,6 +19,41 @@ from common.constants import (
 from consumer.processing import InventoryStore, handle_message
 
 log = logging.getLogger("hq-consumer")
+
+TEMPORARY_POLL_ERRORS = {
+    KafkaError.UNKNOWN_TOPIC_OR_PART,
+    KafkaError._UNKNOWN_TOPIC,
+    KafkaError._TRANSPORT,
+    KafkaError._ALL_BROKERS_DOWN,
+    KafkaError._TIMED_OUT,
+    KafkaError._WAIT_COORD,
+    KafkaError.LEADER_NOT_AVAILABLE,
+    KafkaError._PARTITION_EOF,
+}
+
+
+def handle_poll_error(error: KafkaError) -> None:
+    if not error.fatal() and (error.retriable() or error.code() in TEMPORARY_POLL_ERRORS):
+        log.warning("Kafka not ready; polling will continue: %s", error)
+        return
+    raise KafkaException(error)
+
+
+async def poll_once(consumer: Consumer, producer: Producer, store: InventoryStore) -> bool:
+    """A missing topic during make reset is not a process failure or an acknowledgement."""
+    try:
+        message = await asyncio.to_thread(consumer.poll, 0.5)
+    except KafkaException as error:
+        handle_poll_error(error.args[0])
+        return False
+    if message is None:
+        return False
+    if message.error():
+        handle_poll_error(message.error())
+        return False
+    # Data/DB/commit failures still propagate: no later offset can skip this record.
+    await handle_message(message, store, consumer, producer)
+    return True
 
 
 async def run() -> None:
@@ -44,14 +79,7 @@ async def run() -> None:
         consumer.subscribe([TOPIC_INVENTORY])
         log.info("Subscribed to %s as %s", TOPIC_INVENTORY, CONSUMER_GROUP)
         while not stop.is_set():
-            message = await asyncio.to_thread(consumer.poll, 0.5)
-            if message is None:
-                continue
-            if message.error():
-                raise KafkaException(message.error())
-            # A database/broker failure exits without acknowledging this message.
-            # The restart policy replays it; no later offset can skip it.
-            await handle_message(message, store, consumer, producer)
+            await poll_once(consumer, producer, store)
     finally:
         log.info("Stopping HQ Consumer")
         await asyncio.to_thread(consumer.close)
