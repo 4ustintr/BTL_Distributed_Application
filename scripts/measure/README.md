@@ -14,6 +14,7 @@ Ghi chú:
 * M1 cần đồng hồ hai máy đồng bộ bằng NTP; nếu không, đặt kho và HQ trên cùng một máy khi đo và ghi
   rõ trong báo cáo (docs/tests.md mục 5).
 * Tên file script M1 do Ngọc Chung đặt khi viết; cập nhật bảng trên cùng lúc.
-* make measure-failover hiện là TODO; Nhật Khánh nối lệnh này vào scripts/measure/m2\_m4.py.
+* make measure-failover gọi scripts/measure/m2\_m4.py; tham số thêm qua ARGS, ví dụ
+  make measure-failover ARGS="--only m2 --runs 5".
 * Script dùng mã cố định trong scripts/demo\_ids.env và thư viện trong danh sách cho phép (CLAUDE.md).
 * README này do Minh Danh quản lý; script đo thuộc chủ sở hữu ghi trong bảng.
