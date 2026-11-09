@@ -7,6 +7,7 @@ node-api/routers/transfers.py (Minh Hiếu) gọi.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import Callable, Mapping
@@ -17,6 +18,7 @@ from uuid import UUID
 import asyncpg
 
 from common.constants import (
+    UNSAFE_READ_WRITE_DELAY_S,
     VERSION_CONFLICT_MAX_RETRIES,
     AggregateType,
     ErrorCode,
@@ -292,6 +294,8 @@ async def _overwrite_unsafe(
     current = await _read_version(conn, dc_id, product_id)
     if current is None or current["qty_on_hand"] - current["qty_reserved"] < qty:
         raise _insufficient(dc_id, product_id, qty, current)
+    # F11: chờ giữa đọc và ghi để lệnh song song kịp đọc cùng số tồn, lost update luôn tái hiện
+    await asyncio.sleep(UNSAFE_READ_WRITE_DELAY_S)
     row = await conn.fetchrow(
         "UPDATE inventory SET qty_on_hand = $1, updated_at = now() "
         "WHERE dc_id = $2 AND product_id = $3 "

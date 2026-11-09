@@ -17,9 +17,7 @@ import httpx
 import pytest
 from fixtures import REPO_ROOT, host_ips, read_env_file
 
-from common.constants import ENV_HOST_B_IP, NodeMode
-
-ENV_POSTGRES_PASSWORD = "POSTGRES_PASSWORD"  # biến của compose (.env.example), không phải spec F2
+from common.constants import ENV_HOST_B_IP, ENV_POSTGRES_PASSWORD, NodeMode
 
 
 def _host_b() -> str:

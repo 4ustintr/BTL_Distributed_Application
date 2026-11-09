@@ -27,6 +27,7 @@ from node_fakes import FakeConn
 from services import stock
 
 from common.constants import (
+    UNSAFE_READ_WRITE_DELAY_S,
     VERSION_CONFLICT_MAX_RETRIES,
     AggregateType,
     ErrorCode,
@@ -245,6 +246,50 @@ async def test_consume_lock_mode_none_overwrites_without_version_check() -> None
     assert 70 in updates[0].args and 9 not in updates[0].args
     assert result.qty_on_hand == 70
     assert conn.kinds()[-1] == "insert_movement"  # sổ vẫn ghi: tồn và sổ sẽ lệch khi tranh chấp
+
+
+async def test_consume_lock_mode_none_waits_between_read_and_write(monkeypatch) -> None:
+    # F11: chờ UNSAFE_READ_WRITE_DELAY_S giữa đọc và ghi để hai lệnh của make race-unsafe luôn cùng
+    # đọc một số tồn (TC04 luôn ra lost update)
+    conn = FakeConn(
+        {
+            "select_inventory": [inv_row(9, 100, 0)],
+            "update_inventory": [row(70, 0, 4)],
+            "insert_movement": [MOVEMENT_OK],
+        }
+    )
+    waits: list[tuple[float, list[str]]] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        waits.append((seconds, list(conn.kinds())))
+
+    monkeypatch.setattr(stock.asyncio, "sleep", fake_sleep)
+    await stock.consume(
+        conn, dc_id=DC_ID, product_id=PRODUCT_ID, qty=30, request_id=REQ,
+        created_by=WHO, ref_type="ISSUE", lock_mode=LockMode.NONE,
+    )  # fmt: skip
+    assert waits == [(UNSAFE_READ_WRITE_DELAY_S, ["select_inventory"])]  # sau đọc, trước UPDATE
+
+
+async def test_consume_optimistic_does_not_wait(monkeypatch) -> None:
+    conn = FakeConn(
+        {
+            "select_inventory": [inv_row(9, 100, 0)],
+            "update_inventory": [row(70, 0, 10)],
+            "insert_movement": [MOVEMENT_OK],
+        }
+    )
+    waits: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        waits.append(seconds)
+
+    monkeypatch.setattr(stock.asyncio, "sleep", fake_sleep)
+    await stock.consume(
+        conn, dc_id=DC_ID, product_id=PRODUCT_ID, qty=30, request_id=REQ,
+        created_by=WHO, ref_type="ISSUE",
+    )  # fmt: skip
+    assert waits == []
 
 
 async def test_consume_lock_mode_none_still_checks_availability_on_the_read() -> None:
