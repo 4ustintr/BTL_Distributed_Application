@@ -1,4 +1,4 @@
-"""TC07 – Từ chối trước khi xuất, phần ở kho (docs/tests.md mục 4); kèm phần kho của TC06.
+"""/cancel và /sync-status CANCELLED ở kho – phần kho của TC07 (và TC06), docs/tests.md mục 4.
 
 /cancel ở kho nguồn (F10.e): phiếu còn CREATED thì chuyển CANCELLED, nhả giữ chỗ (qty_reserved
 Bắc về 0), ghi InventoryChanged và TransferCancelled; đã xuất thì 409 INVALID_STATE (TC06).

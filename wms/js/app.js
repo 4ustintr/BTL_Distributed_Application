@@ -8,6 +8,9 @@
   const config = window.CONFIG;
   const dcId = Number(config.DC_ID);
   const api = window.WmsApi.create(config);
+  // Máy trạng thái NORMAL/FAILOVER/WAITING (F9) và đường ghi hộ qua HQ: js/client.js (Nhật Khánh)
+  const Mode = window.WmsClient.Mode;
+  const wms = window.WmsClient.createWmsClient(config);
   const ids = new L.RequestIds();
   const REFRESH_MS = 3000;
 
@@ -45,35 +48,38 @@
     document.querySelectorAll(".transfers button").forEach((b) => { b.disabled = value; });
   }
 
-  // ---- Trạng thái kho -----------------------------------------------------------------------
-  async function refreshHealth() {
-    const res = await api.health();
-    const mode = res.body && res.body.mode;
-    el.mode.className = "badge";
-    if (res.status === 0) {
-      el.mode.textContent = "mất kết nối";
-      el.mode.classList.add("badge-down");
-    } else if (mode === "ONLINE") {
-      el.mode.textContent = "ONLINE";
-      el.mode.classList.add("badge-online");
-    } else if (mode === "RECOVERING") {
-      el.mode.textContent = "đang đồng bộ";
-      el.mode.classList.add("badge-recovering");
-    } else {
-      el.mode.textContent = "chưa rõ";
-      el.mode.classList.add("badge-unknown");
-    }
-    // F6: khi RECOVERING kho từ chối nhập, xuất từ WMS (503 DC_RECOVERING), nên khóa nút
-    const locked = mode === "RECOVERING";
+  // ---- Chế độ WMS (F9, do js/client.js kiểm tra GET /health mỗi 2 giây) ----------------------
+  const MODE_VIEW = {
+    [Mode.NORMAL]: { text: "ONLINE", badge: "badge-online", notice: "" },
+    [Mode.FAILOVER]: {
+      text: "ghi hộ qua HQ",
+      badge: "badge-down",
+      notice: "Không gọi được kho: nhập, xuất được gửi lên HQ ghi hộ; kho lên lại sẽ tự đồng bộ.",
+    },
+    [Mode.WAITING]: {
+      text: "đang đồng bộ",
+      badge: "badge-recovering",
+      notice: "Kho đang đồng bộ: tạm khóa nhập, xuất cho tới khi HQ xác nhận xong.",
+    },
+  };
+
+  function renderMode(mode) {
+    const view = MODE_VIEW[mode];
+    el.mode.className = `badge ${view.badge}`;
+    el.mode.textContent = view.text;
+    // F9: WAITING khóa nút nhập, xuất (kho cũng trả 503 DC_RECOVERING nếu vẫn gửi)
+    const locked = mode === Mode.WAITING;
     el.stockButtons.forEach((b) => {
       b.dataset.locked = locked ? "1" : "0";
       b.disabled = busy || locked;
     });
-    showNotice(
-      "mode",
-      locked ? "Kho đang đồng bộ: tạm khóa nhập, xuất cho tới khi HQ xác nhận xong." : "",
-    );
+    showNotice("mode", view.notice);
   }
+
+  async function refreshHealth() {
+    renderMode(wms.getMode());
+  }
+  wms.onModeChange(renderMode);
 
   // ---- Tồn kho ------------------------------------------------------------------------------
   function cell(text) {
@@ -82,11 +88,11 @@
     return td;
   }
 
-  function renderInventory(items) {
+  function renderInventory(items, emptyText = "Kho chưa có hàng.") {
     el.stockRows.replaceChildren();
     if (!items.length) {
       const tr = document.createElement("tr");
-      const td = cell("Kho chưa có hàng.");
+      const td = cell(emptyText);
       td.colSpan = 5;
       tr.append(td);
       el.stockRows.append(tr);
@@ -105,7 +111,7 @@
   async function refreshInventory() {
     const res = await api.inventory();
     if (res.ok) renderInventory(res.body.items);
-    else if (res.status === 0) renderInventory([]);
+    else if (res.status === 0) renderInventory([], "Không đọc được tồn kho: kho đang mất kết nối.");
   }
 
   // ---- Nhập, xuất ---------------------------------------------------------------------------
@@ -122,12 +128,21 @@
     const verb = kind === "inbound" ? "Nhập" : "Xuất";
     setBusy(true);
     showResult(wasRetry ? `${verb} hàng: đang gửi lại cùng mã lệnh…` : `${verb} hàng: đang gửi…`);
-    const res = await api.sendStock(path, body);
+    // NORMAL: Node API; FAILOVER: HQ ghi hộ, cùng request_id (F9); WAITING: không gửi
+    const res = await wms.sendStock(path, body, { onStatus: (msg) => showResult(msg) });
     setBusy(false);
 
     if (res.ok) {
       ids.settle(key);
       const dup = res.body.duplicate ? " (lệnh trùng, đã được áp dụng từ trước)" : "";
+      if (res.via === "HQ") {
+        showResult(
+          `${verb}: HQ đã ghi hộ${dup}, sẽ đẩy về kho khi kho lên lại. ` +
+            `Tồn tạm tính ${res.body.provisional_qty}.`,
+          "ok",
+        );
+        return;
+      }
       showResult(
         `${verb} thành công${dup}. Tồn hiện tại ${res.body.qty_on_hand} (version ${res.body.version}).`,
         "ok",
@@ -199,7 +214,8 @@
     if (action.confirm && !window.confirm(`Từ chối phiếu ${t.transfer_code}?`)) return;
     setBusy(true);
     showResult(`${action.text} ${t.transfer_code}: đang gửi…`);
-    const res = await api[action.call](t.transfer_id, who);
+    // timeout 20 giây: kho gọi tiếp lên HQ theo F5, lâu nhất 18 giây (js/client.js)
+    const res = await wms.transferAction(t.transfer_id, action.call, { created_by: who });
     setBusy(false);
     if (res.ok) {
       showResult(`${action.text} ${t.transfer_code} thành công.`, "ok");
@@ -225,6 +241,7 @@
   }
 
   el.refresh.addEventListener("click", refreshAll);
+  wms.start();
   refreshAll();
   setInterval(refreshAll, REFRESH_MS);
 })();
