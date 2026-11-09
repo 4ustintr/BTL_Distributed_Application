@@ -1,6 +1,8 @@
-// wms/js/client.js – chế độ WMS theo F9 (Nhật Khánh). Chạy: node --test tests/wms/test_client.mjs
+// wms/js/client.js – chế độ WMS theo F9 (Nhật Khánh). Chạy: make test-js
 import test from "node:test";
 import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
+import * as client from "../../wms/js/client.js";
 import {createWmsClient, Message, Mode, newRequestId, nextMode} from "../../wms/js/client.js";
 
 const CONFIG = {DC_ID: 2, NODE_URL: "http://b:8002", HQ_URL: "http://a:8000"};
@@ -34,7 +36,34 @@ test("bảng chuyển chế độ F9", () => {
   assert.deepEqual(nextMode(Mode.FAILOVER, 3, online), {mode: Mode.NORMAL, missed: 0});
   assert.deepEqual(nextMode(Mode.WAITING, 0, online), {mode: Mode.NORMAL, missed: 0});
   assert.deepEqual(nextMode(Mode.NORMAL, 1, online), {mode: Mode.NORMAL, missed: 0});
-  assert.deepEqual(nextMode(Mode.NORMAL, 0, recovering), {mode: Mode.NORMAL, missed: 0});
+  assert.deepEqual(nextMode(Mode.NORMAL, 0, recovering), {mode: Mode.WAITING, missed: 0});
+  assert.deepEqual(nextMode(Mode.WAITING, 0, fail), {mode: Mode.WAITING, missed: 1});
+  assert.deepEqual(nextMode(Mode.WAITING, 1, fail), {mode: Mode.FAILOVER, missed: 2});
+  assert.deepEqual(nextMode(Mode.WAITING, 1, recovering), {mode: Mode.WAITING, missed: 0});
+});
+
+test("hằng số khớp common/constants.py (F11, F5)", () => {
+  const py = readFileSync(new URL("../../common/constants.py", import.meta.url), "utf8");
+  for (const name of ["WMS_HEALTH_INTERVAL_S", "WMS_HEALTH_TIMEOUT_S", "WMS_FAILOVER_MISSED", "HTTP_TIMEOUT_S"]) {
+    const m = py.match(new RegExp(`^${name} = ([0-9.]+)`, "m"));
+    assert.ok(m, `không thấy ${name} trong common/constants.py`);
+    assert.equal(client[name], Number(m[1]), name);
+  }
+});
+
+test("NORMAL mà kho báo RECOVERING thì WAITING; WAITING mà kho chết 2 lần thì FAILOVER", async () => {
+  let nodeState = "RECOVERING";
+  const {client: wms} = fakeClient(() => (nodeState === "DOWN" ? down() : health(nodeState)));
+  const seen = [];
+  wms.onModeChange((m) => seen.push(m));
+  await wms.checkHealth();
+  assert.equal(wms.getMode(), Mode.WAITING);
+  nodeState = "DOWN";
+  await wms.checkHealth();
+  assert.equal(wms.getMode(), Mode.WAITING);
+  await wms.checkHealth();
+  assert.equal(wms.getMode(), Mode.FAILOVER);
+  assert.deepEqual(seen, [Mode.WAITING, Mode.FAILOVER]);
 });
 
 test("request_id là UUID v4, kể cả khi không có crypto.randomUUID (http không bảo mật)", () => {

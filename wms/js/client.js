@@ -17,11 +17,17 @@ const NodeMode = Object.freeze({ONLINE: "ONLINE", RECOVERING: "RECOVERING"}); //
 const RefType = Object.freeze({inbound: "RECEIPT", outbound: "ISSUE"}); // F6 /inbound, /outbound
 const ERR_DC_NOT_OFFLINE = "DC_NOT_OFFLINE"; // F5, F7
 
-export const HEALTH_INTERVAL_MS = 2000; // F11: chu kỳ WMS kiểm tra Node API
-export const FAILOVER_MISSED = 2; // F11, F9: 2 lần lỗi liên tiếp -> FAILOVER
+// Tham số F11, F5. JS không import được common/constants.py nên khai báo lại ĐÚNG TÊN và giá trị;
+// tests/wms/test_client.mjs đọc common/constants.py để bảo đảm hai bên không lệch nhau.
+export const WMS_HEALTH_INTERVAL_S = 2.0; // F11: chu kỳ WMS kiểm tra Node API
+export const WMS_HEALTH_TIMEOUT_S = 1.0; // F11: timeout GET /health của WMS tới Node API
+export const WMS_FAILOVER_MISSED = 2; // F11, F9: 2 lần lỗi liên tiếp -> FAILOVER
+export const HTTP_TIMEOUT_S = 2.0; // F5, F11: timeout lệnh gọi
 export const RESEND_MS = 2000; // F9: gặp 409 DC_NOT_OFFLINE thì gửi lại sau 2 giây
-export const HEALTH_TIMEOUT_MS = 1000; // GIẢ ĐỊNH: spec không ghi; lấy như HQ (F10.j)
-export const REQUEST_TIMEOUT_MS = 2000; // F5: timeout 2 giây
+
+const HEALTH_INTERVAL_MS = WMS_HEALTH_INTERVAL_S * 1000;
+const HEALTH_TIMEOUT_MS = WMS_HEALTH_TIMEOUT_S * 1000;
+const REQUEST_TIMEOUT_MS = HTTP_TIMEOUT_S * 1000;
 
 export const Message = Object.freeze({
   CONFIRMING: "Đang xác nhận trạng thái kho, sẽ tự gửi lại sau 2 giây",
@@ -37,17 +43,15 @@ export const Message = Object.freeze({
 export function nextMode(mode, missed, health) {
   if (!health.ok) {
     const count = missed + 1;
-    // NORMAL -> FAILOVER: 2 lần GET /health thất bại.
-    // GIẢ ĐỊNH: đang WAITING mà kho chết lại thì giữ WAITING (F9 không có dòng này).
-    if (mode === Mode.NORMAL && count >= FAILOVER_MISSED) return {mode: Mode.FAILOVER, missed: count};
+    // NORMAL -> FAILOVER, WAITING -> FAILOVER: 2 lần GET /health thất bại liên tiếp
+    const canFailover = mode === Mode.NORMAL || mode === Mode.WAITING;
+    if (canFailover && count >= WMS_FAILOVER_MISSED) return {mode: Mode.FAILOVER, missed: count};
     return {mode, missed: count};
   }
-  if (health.mode === NodeMode.ONLINE) return {mode: Mode.NORMAL, missed: 0}; // FAILOVER, WAITING -> NORMAL
-  if (health.mode === NodeMode.RECOVERING && mode === Mode.FAILOVER) {
-    return {mode: Mode.WAITING, missed: 0}; // FAILOVER -> WAITING
-  }
-  // GIẢ ĐỊNH: NORMAL mà kho báo RECOVERING thì giữ NORMAL (F9 không có dòng này);
-  // kho tự trả 503 DC_RECOVERING cho lệnh nhập, xuất.
+  // FAILOVER, WAITING -> NORMAL: Node API báo ONLINE
+  if (health.mode === NodeMode.ONLINE) return {mode: Mode.NORMAL, missed: 0};
+  // NORMAL -> WAITING, FAILOVER -> WAITING: Node API báo RECOVERING
+  if (health.mode === NodeMode.RECOVERING) return {mode: Mode.WAITING, missed: 0};
   return {mode, missed: 0};
 }
 
