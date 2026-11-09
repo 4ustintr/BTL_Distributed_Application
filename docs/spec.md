@@ -169,7 +169,7 @@ Khởi động lại connector sau khi kho lên lại: POST http\://HOST\_A\_IP:
 | POST /inbound | WMS | {"request\_id", "product\_id", "qty", "ref\_type": "RECEIPT", "created\_by"} | 200 {"qty\_on\_hand", "version", "duplicate"}; 400; 503 DC\_RECOVERING |
 | POST /outbound | WMS | {"request\_id", "product\_id", "qty", "ref\_type": "ISSUE", "created\_by"} | 200; 409 VERSION\_CONFLICT; 422; 503 DC\_RECOVERING |
 | POST /transfers/notice | HQ | {"transfer\_id", "transfer\_code", "from\_dc\_id", "to\_dc\_id", "direction", "items": \[{"line\_no": 1, "product\_id": 1, "qty": 50}\]} | 200 {"status": "CREATED", "duplicate"}; 400 VALIDATION\_ERROR khi SKU hoặc kho trong phiếu không có trong danh mục; 422 khi kho nguồn không đủ hàng để giữ chỗ |
-| POST /transfers/{id}/ship | WMS kho nguồn | {"created\_by"} | 200 {"status": "SHIPPED"}; 409 INVALID\_STATE |
+| POST /transfers/{id}/ship | WMS kho nguồn | {"created\_by"} | 200 {"status": "SHIPPED"}; 409 INVALID\_STATE nếu phiếu đã CANCELLED; 422 INSUFFICIENT\_STOCK nếu giữ chỗ không đủ |
 | POST /transfers/{id}/receive | WMS kho đích | {"created\_by"} | 200 {"status": "RECEIVED"}; 409 INVALID\_STATE nếu phiếu chưa SHIPPED |
 | POST /transfers/{id}/decline | WMS kho đích | {"reason"} | Chuyển tiếp đồng bộ tới HQ /decline, trả nguyên kết quả của HQ |
 | POST /transfers/{id}/cancel | HQ, gọi kho nguồn | {"reason": "DECLINED"} | 200 {"status": "CANCELLED"}, kể cả khi đã hủy từ trước; 409 INVALID\_STATE nếu đã SHIPPED |
@@ -184,7 +184,7 @@ Sau khi commit bước ship hoặc receive, Node API gọi HQ /shipped hoặc /r
 | Endpoint | Gọi bởi | Request body | Kết quả |
 | :---- | :---- | :---- | :---- |
 | GET /health | Dashboard, script demo |  | 200 {"status": "ok"} |
-| POST /transfers | Dashboard | {"from\_dc\_id": 1, "to\_dc\_id": 3, "items": \[{"product\_id": 1, "qty": 50}\]} | 201 {"transfer\_id", "transfer\_code", "status": "CREATED"}; 422 khi kho nguồn không giữ chỗ được (phiếu CANCELLED, lý do INSUFFICIENT\_STOCK); 503 DC\_UNREACHABLE nếu một trong hai kho không ONLINE, khi đó không tạo phiếu |
+| POST /transfers | Dashboard | {"from\_dc\_id": 1, "to\_dc\_id": 3, "items": \[{"product\_id": 1, "qty": 50}\]} | 201 {"transfer\_id", "transfer\_code", "status": "CREATED"}; 422 khi kho nguồn không giữ chỗ được (phiếu CANCELLED, lý do INSUFFICIENT\_STOCK); 503 DC\_UNREACHABLE nếu một trong hai kho không ONLINE, khi đó không tạo phiếu; kho trả lỗi khác thì trả nguyên lỗi của kho, lỗi mạng khi gọi kho thì 503 DC\_UNREACHABLE, cả hai sau khi đã gọi /cancel kho nguồn (F10.f) |
 | GET /transfers/{id} | Dashboard |  | 200 bản ghi transfer\_summary |
 | GET /transfers?status=SHIPPED | Dashboard |  | 200 danh sách phiếu |
 | POST /transfers/{id}/shipped | Node API kho nguồn | {"shipped\_at"} | 200 |
@@ -278,7 +278,7 @@ TransferCreated, TransferReceived, TransferCancelled dùng cùng cấu trúc v�
 | (chưa có) | PENDING | POST /failover | Kho OFFLINE; lệnh xuất cần đủ khả dụng tạm tính |
 | PENDING | APPLIED | Consumer | Thấy request\_id trong InventoryChanged |
 | PENDING | APPLIED | Replay Worker | Kho trả 200 kèm duplicate: true (giao dịch đã có ở kho từ trước, sẽ không có sự kiện mới) |
-| PENDING | REJECTED | Replay Worker | Kho trả 422 |
+| PENDING | REJECTED | Replay Worker | Kho trả 422, hoặc 400 VALIDATION\_ERROR |
 
 ### Chế độ của WMS
 
@@ -356,7 +356,7 @@ Ghi chú: inventory phải được cập nhật trước stock\_movement vì st
 ### i. Replay Worker (mỗi 2 giây)
 
 1. Với mỗi kho đang RECOVERING, lấy các pending\_txn đang PENDING theo thứ tự created\_at.  
-2. Gửi lần lượt từng dòng tới /replay. Trả 200 thì sang dòng kế; nếu kèm duplicate: true thì chuyển thẳng APPLIED. Trả 422 thì chuyển REJECTED và ghi error\_msg. Lỗi mạng hoặc 5xx thì dừng vòng này. Dòng đã gửi nhưng chưa APPLIED (đang chờ sự kiện CDC) sẽ được gửi lại ở vòng sau; việc này an toàn vì kho chặn trùng theo request\_id.  
+2. Gửi lần lượt từng dòng tới /replay. Trả 200 thì sang dòng kế; nếu kèm duplicate: true thì chuyển thẳng APPLIED. Trả 422, hoặc 400 VALIDATION\_ERROR (dữ liệu lệnh sai, gửi lại vẫn sai, ví dụ SKU không có trong danh mục kho), thì chuyển REJECTED và ghi error\_msg. Lỗi mạng, 5xx và các 4xx khác (401, 409 VERSION\_CONFLICT) thì dừng vòng này, vòng sau gửi lại. Dòng đã gửi nhưng chưa APPLIED (đang chờ sự kiện CDC) sẽ được gửi lại ở vòng sau; việc này an toàn vì kho chặn trùng theo request\_id.  
 3. Khi kho không còn dòng PENDING nào, gọi /recovery/complete; trả 200 thì chuyển dc\_status sang ONLINE.
 
 ### j. Health Monitor (mỗi 2 giây, cho từng kho)
@@ -383,6 +383,7 @@ Ghi chú: inventory phải được cập nhật trước stock\_movement vì st
 | Timeout và thử lại khi gọi giữa các service | 2 giây, tối đa 5 lần gọi, cách 2 giây | HQ API, Node API |
 | Timeout WMS gọi /ship, /receive, /decline | 20 giây (lớn hơn 18 giây, thời gian tối đa của chuỗi thử lại theo F5 khi kho gọi HQ) | WMS |
 | Số lần thử lại khi xung đột version | 3 | Node API |
+| Độ trễ giữa bước đọc và bước ghi khi LOCK\_MODE=none | 200 ms, để hai lệnh của make race-unsafe luôn cùng đọc một số tồn (chỉ dùng cho TC04) | Node API |
 | Chu kỳ đối soát định kỳ | 60 giây (tùy chọn, xem F10.k) | HQ API |
 | Thời gian tối đa một vòng Replay Worker | 30 giây | HQ API |
 | Chu kỳ Replay Worker | 2 giây | HQ API |

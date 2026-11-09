@@ -267,6 +267,7 @@ HTTP_TIMEOUT_S = 2.0  # F11, F5 – timeout lệnh gọi giữa các service
 HTTP_MAX_RETRIES = 4  # F11, F5 – thử lại tối đa sau lần gọi đầu: tổng tối đa 5 lần gọi
 HTTP_RETRY_INTERVAL_S = 2.0  # F11, F5 – khoảng cách giữa hai lần thử
 VERSION_CONFLICT_MAX_RETRIES = 3  # F11, F10.a, db.md 2.7 – thử lại khi xung đột version
+UNSAFE_READ_WRITE_DELAY_S = 0.2  # F11, F2 – LOCK_MODE=none: chờ giữa đọc và ghi (TC04)
 RECONCILE_INTERVAL_S = 60.0  # F11, F10.k – chu kỳ đối soát (tùy chọn)
 REPLAY_ROUND_MAX_S = 30.0  # F11 – thời gian tối đa một vòng Replay Worker
 REPLAY_INTERVAL_S = 2.0  # F11, F10.i – chu kỳ Replay Worker
