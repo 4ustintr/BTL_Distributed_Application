@@ -8,6 +8,8 @@
 //   const op = wms.newOperation("outbound", {product_id: 1, qty: 10, created_by: "nv"});
 //   const result = await wms.submit(op, {onStatus: (msg) => hienThongBao(msg)});
 //   // result = {ok, status, body, via: "NODE" | "HQ"} hoặc {ok: false, reason, message}
+//   const r = await wms.transferAction(transferId, "ship", {created_by: "nv"});  // hoặc "receive"
+//   // chờ tới TRANSFER_ACTION_TIMEOUT_S (20 giây) vì kho gọi callback lên HQ theo F5 (tối đa 18 giây)
 //
 // request_id sinh MỘT lần trong newOperation và giữ nguyên mọi lần gửi lại, kể cả khi đổi từ
 // Node API sang HQ (F9). Bấm lại sau khi lỗi thì truyền lại đúng op cũ.
@@ -23,17 +25,30 @@ export const WMS_HEALTH_INTERVAL_S = 2.0; // F11: chu kỳ WMS kiểm tra Node A
 export const WMS_HEALTH_TIMEOUT_S = 1.0; // F11: timeout GET /health của WMS tới Node API
 export const WMS_FAILOVER_MISSED = 2; // F11, F9: 2 lần lỗi liên tiếp -> FAILOVER
 export const HTTP_TIMEOUT_S = 2.0; // F5, F11: timeout lệnh gọi
+export const HTTP_MAX_RETRIES = 4; // F5, F11: thử lại tối đa sau lần gọi đầu (tổng 5 lần gọi)
+export const HTTP_RETRY_INTERVAL_S = 2.0; // F5, F11: khoảng cách giữa hai lần thử
 export const RESEND_MS = 2000; // F9: gặp 409 DC_NOT_OFFLINE thì gửi lại sau 2 giây
+
+// /ship, /receive (F6): kho commit rồi mới gọi callback /shipped, /received lên HQ theo F5, lâu
+// nhất 5 × 2 + 4 × 2 = 18 giây, hết lượt thì trả 503 DC_UNREACHABLE. WMS phải chờ lâu hơn thế để
+// nhận được 503 đó thay vì tự báo hết giờ; cộng thêm một HTTP_TIMEOUT_S cho phần việc của kho.
+export const CALLBACK_RETRY_BUDGET_S =
+  (HTTP_MAX_RETRIES + 1) * HTTP_TIMEOUT_S + HTTP_MAX_RETRIES * HTTP_RETRY_INTERVAL_S;
+export const TRANSFER_ACTION_TIMEOUT_S = CALLBACK_RETRY_BUDGET_S + HTTP_TIMEOUT_S;
+const TransferAction = Object.freeze({ship: "ship", receive: "receive"}); // F6
 
 const HEALTH_INTERVAL_MS = WMS_HEALTH_INTERVAL_S * 1000;
 const HEALTH_TIMEOUT_MS = WMS_HEALTH_TIMEOUT_S * 1000;
 const REQUEST_TIMEOUT_MS = HTTP_TIMEOUT_S * 1000;
+const TRANSFER_ACTION_TIMEOUT_MS = TRANSFER_ACTION_TIMEOUT_S * 1000;
 
 export const Message = Object.freeze({
   CONFIRMING: "Đang xác nhận trạng thái kho, sẽ tự gửi lại sau 2 giây",
   WAITING: "Kho đang đồng bộ, tạm khóa nhập, xuất",
   NODE_UNREACHABLE: "Không gọi được kho, đang thử lại",
   HQ_UNREACHABLE: "Không gọi được trung tâm, đang thử lại",
+  TRANSFER_BLOCKED: "Kho đang mất kết nối hoặc đang đồng bộ, chưa xuất/nhận phiếu được",
+  TRANSFER_RETRY: "Không gọi được kho, vui lòng bấm lại",
 });
 
 // ---------------------------------------------------------------------------
@@ -153,14 +168,29 @@ export function createWmsClient(config, deps = {}) {
     return Object.freeze({kind, request_id: newRequestId(), product_id, qty, created_by});
   }
 
-  async function postJson(url, body) {
+  async function postJson(url, body, timeoutMs = REQUEST_TIMEOUT_MS) {
     const resp = await fetchWithTimeout(
       fetchImpl,
       url,
       {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)},
-      REQUEST_TIMEOUT_MS,
+      timeoutMs,
     );
     return {status: resp.status, ok: resp.ok, body: await readJson(resp)};
+  }
+
+  // Xuất / nhận phiếu điều chuyển ở kho (F6 POST /transfers/{id}/ship, /receive, body
+  // {"created_by"}). Gửi một lần, chờ tới TRANSFER_ACTION_TIMEOUT_S; không tự gửi lại: gặp
+  // 503 DC_UNREACHABLE hoặc lỗi mạng thì nhân viên bấm lại, kho trả duplicate và gửi lại callback.
+  // Chỉ gọi được ở NORMAL: kho sập thì không ghi hộ điều chuyển qua HQ.
+  async function transferAction(transferId, action, {created_by}) {
+    if (!(action in TransferAction)) throw new Error(`action phải là ship hoặc receive: ${action}`);
+    if (mode !== Mode.NORMAL) return {ok: false, reason: mode, message: Message.TRANSFER_BLOCKED};
+    const url = `${nodeUrl}/transfers/${encodeURIComponent(transferId)}/${action}`;
+    try {
+      return {...(await postJson(url, {created_by}, TRANSFER_ACTION_TIMEOUT_MS)), via: "NODE"};
+    } catch {
+      return {ok: false, reason: "UNREACHABLE", message: Message.TRANSFER_RETRY};
+    }
   }
 
   function toNode(op) {
@@ -215,6 +245,7 @@ export function createWmsClient(config, deps = {}) {
     checkHealth,
     newOperation,
     submit,
+    transferAction,
     getMode: () => mode,
     onModeChange(cb) {
       listeners.add(cb);

@@ -44,7 +44,10 @@ test("bảng chuyển chế độ F9", () => {
 
 test("hằng số khớp common/constants.py (F11, F5)", () => {
   const py = readFileSync(new URL("../../common/constants.py", import.meta.url), "utf8");
-  for (const name of ["WMS_HEALTH_INTERVAL_S", "WMS_HEALTH_TIMEOUT_S", "WMS_FAILOVER_MISSED", "HTTP_TIMEOUT_S"]) {
+  for (const name of [
+    "WMS_HEALTH_INTERVAL_S", "WMS_HEALTH_TIMEOUT_S", "WMS_FAILOVER_MISSED",
+    "HTTP_TIMEOUT_S", "HTTP_MAX_RETRIES", "HTTP_RETRY_INTERVAL_S",
+  ]) {
     const m = py.match(new RegExp(`^${name} = ([0-9.]+)`, "m"));
     assert.ok(m, `không thấy ${name} trong common/constants.py`);
     assert.equal(client[name], Number(m[1]), name);
@@ -166,4 +169,55 @@ test("lỗi nghiệp vụ (422) trả nguyên cho giao diện, không gửi lạ
   assert.equal(r.status, 422);
   assert.equal(r.body.error_code, "INSUFFICIENT_STOCK");
   assert.equal(calls.length, 1);
+});
+
+test("ship/receive chờ lâu hơn 18 giây callback F5 (5 × 2 + 4 × 2) của kho", () => {
+  assert.equal(client.CALLBACK_RETRY_BUDGET_S, 18);
+  assert.ok(client.TRANSFER_ACTION_TIMEOUT_S > 18);
+});
+
+test("transferAction: POST /transfers/{id}/ship đúng body F6, timeout dài, không tự gửi lại", async () => {
+  const seen = [];
+  const wms = createWmsClient(CONFIG, {
+    fetch: async (url, init = {}) => {
+      seen.push({url, body: init.body ? JSON.parse(init.body) : undefined, signal: init.signal});
+      return json(200, {status: "SHIPPED", duplicate: false});
+    },
+    sleep: async () => {},
+    log: () => {},
+  });
+  const r = await wms.transferAction("t-1", "ship", {created_by: "nv"});
+  assert.equal(r.status, 200);
+  assert.equal(r.body.status, "SHIPPED");
+  assert.deepEqual(seen.map((c) => [c.url, c.body]), [["http://b:8002/transfers/t-1/ship", {created_by: "nv"}]]);
+  await assert.rejects(() => wms.transferAction("t-1", "cancel", {created_by: "nv"}));
+});
+
+test("transferAction: 503 DC_UNREACHABLE trả nguyên; lỗi mạng báo bấm lại; FAILOVER thì chặn", async () => {
+  let reply = () => json(503, {error_code: "DC_UNREACHABLE", message: "", details: {}});
+  const {client: wms, calls} = fakeClient((url) => (url.endsWith("/health") ? down() : reply()));
+  const r = await wms.transferAction("t-1", "receive", {created_by: "nv"});
+  assert.deepEqual([r.status, r.body.error_code], [503, "DC_UNREACHABLE"]);
+  reply = down;
+  const again = await wms.transferAction("t-1", "receive", {created_by: "nv"});
+  assert.deepEqual([again.ok, again.reason, again.message], [false, "UNREACHABLE", Message.TRANSFER_RETRY]);
+  assert.equal(calls.length, 2); // không tự gửi lại
+  await wms.checkHealth();
+  await wms.checkHealth();
+  assert.equal(wms.getMode(), Mode.FAILOVER);
+  const blocked = await wms.transferAction("t-1", "receive", {created_by: "nv"});
+  assert.deepEqual([blocked.ok, blocked.reason], [false, Mode.FAILOVER]);
+});
+
+test("transferAction thật sự chờ tới TRANSFER_ACTION_TIMEOUT_S, không cắt ở 2 giây", async () => {
+  const realSetTimeout = globalThis.setTimeout;
+  const delays = [];
+  globalThis.setTimeout = (fn, ms) => { delays.push(ms); return realSetTimeout(() => {}, 0); };
+  try {
+    const wms = createWmsClient(CONFIG, {fetch: async () => json(200, {status: "RECEIVED"}), sleep: async () => {}, log: () => {}});
+    await wms.transferAction("t-1", "receive", {created_by: "nv"});
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
+  assert.deepEqual(delays, [client.TRANSFER_ACTION_TIMEOUT_S * 1000]);
 });
