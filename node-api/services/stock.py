@@ -21,6 +21,7 @@ from common.constants import (
     AggregateType,
     ErrorCode,
     EventType,
+    LockMode,
     MovementType,
     RefType,
 )
@@ -246,6 +247,29 @@ async def _update_optimistic(
     )
 
 
+async def _overwrite_unsafe(
+    conn: asyncpg.Connection, dc_id: int, product_id: int, qty: int
+) -> asyncpg.Record:
+    """LOCK_MODE=none (F2), chỉ cho make race-unsafe: đọc rồi ghi đè, không kiểm tra version.
+
+    Hai lệnh đọc cùng một tồn rồi cùng ghi đè thì một lệnh bị mất (lost update, TC04). Cố ý
+    khác quy tắc "UPDATE inventory luôn có điều kiện version" để chứng minh vì sao cần khóa.
+    """
+    current = await _read_version(conn, dc_id, product_id)
+    if current is None or current["qty_on_hand"] - current["qty_reserved"] < qty:
+        raise _insufficient(dc_id, product_id, qty, current)
+    row = await conn.fetchrow(
+        "UPDATE inventory SET qty_on_hand = $1, updated_at = now() "
+        "WHERE dc_id = $2 AND product_id = $3 "
+        "RETURNING qty_on_hand, qty_reserved, version",
+        current["qty_on_hand"] - qty,
+        dc_id,
+        product_id,
+    )
+    assert row is not None  # dòng đã đọc được ở trên
+    return row
+
+
 async def consume(
     conn: asyncpg.Connection,
     *,
@@ -255,9 +279,13 @@ async def consume(
     request_id: UUID,
     created_by: str,
     ref_type: RefType,
+    lock_mode: LockMode = LockMode.OPTIMISTIC,
 ) -> StockResult:
     """F10.a bước 2 (xuất) và bước 3, khóa lạc quan theo version (db.md 2.7)."""
-    row = await _update_optimistic(conn, _SQL_CONSUME, dc_id, product_id, qty, _insufficient)
+    if lock_mode == LockMode.NONE:
+        row = await _overwrite_unsafe(conn, dc_id, product_id, qty)
+    else:
+        row = await _update_optimistic(conn, _SQL_CONSUME, dc_id, product_id, qty, _insufficient)
     await _insert_movement(
         conn,
         request_id=request_id,

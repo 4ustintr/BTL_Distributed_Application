@@ -6,6 +6,7 @@ GET /health nằm ở main.py.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -133,12 +134,16 @@ async def inbound(request: Request, body: InboundRequest) -> StockChangeResponse
 @router.post("/outbound", response_model=StockChangeResponse)
 async def outbound(request: Request, body: OutboundRequest) -> StockChangeResponse:
     """F6, F10.a: xuất hàng."""
-    return await _apply(request, body, stock.consume, body.ref_type)
+    consume = partial(stock.consume, lock_mode=request.app.state.lock_mode)
+    return await _apply(request, body, consume, body.ref_type)
 
 
 @router.post("/replay", response_model=ReplayResponse)
 async def replay(request: Request, body: ReplayRequest) -> ReplayResponse:
     """F6, F10.a: HQ đẩy lại giao dịch ghi hộ (pending_txn); request_id = txn_id; X-Internal-Key."""
-    op = stock.add_stock if body.txn_type == TxnType.INBOUND else stock.consume
+    if body.txn_type == TxnType.INBOUND:
+        op = stock.add_stock
+    else:
+        op = partial(stock.consume, lock_mode=request.app.state.lock_mode)
     done = await _apply(request, body, op, RefType.REPLAY, from_wms=False)
     return ReplayResponse(qty_on_hand=done.qty_on_hand, duplicate=done.duplicate)
