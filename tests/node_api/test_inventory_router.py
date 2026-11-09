@@ -44,6 +44,7 @@ class Env(SimpleNamespace):
     conn: FakeConn
     events: list[str]
     kw: dict[str, dict[str, Any]]  # tên hàm stock -> tham số keyword của lần gọi cuối
+    argv: dict[str, tuple[Any, ...]]  # tên hàm stock -> tham số vị trí của lần gọi cuối
     fake: Any  # fake(name, returns=None, raises=None): thay một hàm của services/stock.py
 
 
@@ -64,18 +65,20 @@ def env(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
     monkeypatch.setattr(main.asyncpg, "create_pool", fake_create_pool)
 
     kw: dict[str, dict[str, Any]] = {}
+    argv: dict[str, tuple[Any, ...]] = {}
 
     def fake(name: str, returns: Any = None, raises: Exception | None = None) -> None:
         async def fn(_conn: Any, *args: Any, **kwargs: Any) -> Any:
             events.append(name)
             kw[name] = kwargs
+            argv[name] = args
             if raises is not None:
                 raise raises
             return returns
 
         monkeypatch.setattr(stock, name, fn)
 
-    e = Env(conn=conn, events=events, kw=kw, fake=fake)
+    e = Env(conn=conn, events=events, kw=kw, argv=argv, fake=fake)
     # mặc định: không trùng, SKU có trong danh mục, ghi thành công
     fake("movement_exists", False)
     fake("product_exists", True)
@@ -88,6 +91,19 @@ def env(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
         client.app.state.mode = NodeMode.ONLINE
         e.client = client
         yield e
+
+
+def assert_inventory_event(
+    env: Env, *, qty_on_hand: int, qty_reserved: int, version: int, ref_type: str
+) -> None:
+    """write_outbox(conn, dc_id, aggregate_type, aggregate_id, event_type, payload), F10.a b4."""
+    dc_id, aggregate_type, aggregate_id, event_type, payload = env.argv["write_outbox"]
+    assert (dc_id, str(aggregate_type), aggregate_id) == (DC_ID, "INVENTORY", "3:1")
+    assert str(event_type) == "InventoryChanged"
+    assert payload["product_id"] == 1
+    assert (payload["qty_on_hand"], payload["qty_reserved"]) == (qty_on_hand, qty_reserved)
+    assert payload["version"] == version
+    assert str(payload["request_id"]) == REQ and str(payload["ref_type"]) == ref_type
 
 
 # ---------------------------------------------------------------------------
@@ -115,10 +131,7 @@ def test_inbound_passes_request_fields_and_outbox_values(env: Env) -> None:
     assert (add["dc_id"], add["product_id"], add["qty"]) == (DC_ID, 1, 10)
     assert str(add["request_id"]) == REQ and add["created_by"] == WHO
     assert str(add["ref_type"]) == "RECEIPT"
-    out = env.kw["write_outbox"]
-    assert (out["dc_id"], out["product_id"]) == (DC_ID, 1)
-    assert (out["qty_on_hand"], out["qty_reserved"], out["version"]) == (20, 0, 2)
-    assert str(out["request_id"]) == REQ and str(out["ref_type"]) == "RECEIPT"
+    assert_inventory_event(env, qty_on_hand=20, qty_reserved=0, version=2, ref_type="RECEIPT")
 
 
 def test_inbound_needs_no_internal_key(env: Env) -> None:
@@ -194,8 +207,7 @@ def test_outbound_ok_follows_f10a_order(env: Env) -> None:
     call = env.kw["consume"]
     assert (call["dc_id"], call["product_id"], call["qty"]) == (DC_ID, 1, 5)
     assert str(call["ref_type"]) == "ISSUE" and call["created_by"] == WHO
-    out = env.kw["write_outbox"]
-    assert (out["qty_on_hand"], out["version"]) == (15, 4) and str(out["ref_type"]) == "ISSUE"
+    assert_inventory_event(env, qty_on_hand=15, qty_reserved=0, version=4, ref_type="ISSUE")
 
 
 def test_outbound_503_while_recovering(env: Env) -> None:

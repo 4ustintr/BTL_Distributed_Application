@@ -10,11 +10,15 @@ Hợp đồng của stock.py (do Tuấn Minh đặt, Minh Hiếu gọi các hàm
     current_stock(conn, dc_id, product_id) -> StockResult | None
     add_stock(conn, *, dc_id, product_id, qty, request_id, created_by, ref_type) -> StockResult
     consume(conn, *, dc_id, product_id, qty, request_id, created_by, ref_type) -> StockResult
-    write_outbox(conn, *, dc_id, product_id, qty_on_hand, qty_reserved, version,
-                 request_id, ref_type) -> None
+    reserve(conn, dc_id, product_id, qty) -> Record         # F10.b bước 3; dòng RETURNING
+    release(conn, dc_id, product_id, qty) -> Record         # F10.e bước 2; dòng RETURNING
+    write_outbox(conn, dc_id, aggregate_type, aggregate_id, event_type, payload) -> None
+(chữ ký reserve, release, write_outbox đúng như node-api/routers/transfers.py của Minh Hiếu gọi)
 StockResult có qty_on_hand, qty_reserved, version, duplicate (mặc định False).
 """
 
+import inspect
+import json
 import re
 import uuid
 
@@ -22,7 +26,7 @@ import pytest
 from node_fakes import FakeConn
 from services import stock
 
-from common.constants import VERSION_CONFLICT_MAX_RETRIES, ErrorCode
+from common.constants import VERSION_CONFLICT_MAX_RETRIES, AggregateType, ErrorCode, EventType
 from common.errors import AppError
 
 DC_ID = 3
@@ -211,35 +215,185 @@ async def test_consume_raises_duplicate_when_movement_conflicts() -> None:
 
 
 # ---------------------------------------------------------------------------
-# write_outbox (F10.a bước 4, db.md 2.11, F8)
+# write_outbox tổng quát (F10.a bước 4, F8, db.md 2.11)
 # ---------------------------------------------------------------------------
+INVENTORY_PAYLOAD = {
+    "product_id": PRODUCT_ID,
+    "qty_on_hand": 15,
+    "qty_reserved": 2,
+    "version": 7,
+    "request_id": REQ,
+    "ref_type": "ISSUE",
+}
+
+
+def payload_arg(call) -> dict:  # type: ignore[no-untyped-def]
+    """Tham số payload (chuỗi JSON) của câu INSERT outbox_event."""
+    found = [json.loads(a) for a in call.args if isinstance(a, str) and a.startswith("{")]
+    assert len(found) == 1
+    return found[0]
+
+
 async def test_write_outbox_inserts_inventory_changed_event() -> None:
     conn = FakeConn()
     await stock.write_outbox(
-        conn, dc_id=DC_ID, product_id=PRODUCT_ID, qty_on_hand=15, qty_reserved=2, version=7,
-        request_id=REQ, ref_type="ISSUE",
-    )  # fmt: skip
+        conn, DC_ID, AggregateType.INVENTORY, "3:1", EventType.INVENTORY_CHANGED, INVENTORY_PAYLOAD
+    )
     assert conn.kinds() == ["insert_outbox"]
     call = conn.calls[0]
-    blob = call.sql + " " + " ".join(call.str_args)
-    assert "InventoryChanged" in blob and "INVENTORY" in blob
-    assert "3:1" in call.str_args  # aggregate_id "dc_id:product_id" (common.ids)
-    for value in (15, 2, 7):  # qty_on_hand, qty_reserved, version lấy từ RETURNING bước 2
-        assert value in call.args
-    assert str(REQ) in call.str_args and "ISSUE" in call.str_args
+    for value in ("INVENTORY", "3:1", "InventoryChanged"):
+        assert value in call.str_args  # aggregate_type, aggregate_id (key Kafka), event_type
+    assert DC_ID in call.args
+    payload = payload_arg(call)
+    assert payload["qty_on_hand"] == 15 and payload["qty_reserved"] == 2
+    assert payload["version"] == 7 and payload["product_id"] == PRODUCT_ID
+    assert payload["request_id"] == str(REQ) and payload["ref_type"] == "ISSUE"
 
 
 async def test_write_outbox_stamps_event_id_and_time_in_sql() -> None:
-    # G6: event_id và occurred_at sinh ở kho, ghi vào cả payload (F8)
+    # F8: event_id, event_type, source_dc, occurred_at do kho điền, ghi vào cả payload
     conn = FakeConn()
     await stock.write_outbox(
-        conn, dc_id=DC_ID, product_id=PRODUCT_ID, qty_on_hand=15, qty_reserved=0, version=7,
-        request_id=REQ, ref_type="ISSUE",
-    )  # fmt: skip
+        conn, DC_ID, AggregateType.INVENTORY, "3:1", EventType.INVENTORY_CHANGED, INVENTORY_PAYLOAD
+    )
     sql = conn.calls[0].sql
     assert "gen_random_uuid()" in sql and "clock_timestamp()" in sql
-    for key in ("event_id", "event_type", "source_dc", "occurred_at", "request_id"):
+    for key in ("event_id", "event_type", "source_dc", "occurred_at"):
         assert key in sql
+    assert "event_id" not in payload_arg(conn.calls[0])  # không do người gọi truyền
+
+
+async def test_write_outbox_serves_transfer_events() -> None:
+    conn = FakeConn()
+    transfer_id = uuid.UUID("44444444-4444-4444-8444-444444444444")
+    await stock.write_outbox(
+        conn,
+        1,
+        AggregateType.TRANSFER,
+        str(transfer_id),
+        EventType.TRANSFER_SHIPPED,
+        {"transfer_id": transfer_id, "status": "SHIPPED", "shipped_at": None},
+    )
+    call = conn.calls[0]
+    assert "TRANSFER" in call.str_args and str(transfer_id) in call.str_args
+    assert "TransferShipped" in call.str_args
+    assert payload_arg(call)["transfer_id"] == str(transfer_id)
+
+
+# ---------------------------------------------------------------------------
+# reserve, release (F10.b bước 3, F10.e bước 2, db.md 2.7)
+# ---------------------------------------------------------------------------
+async def test_reserve_update_is_conditional_and_returns_row() -> None:
+    conn = FakeConn(
+        {"select_inventory": [inv_row(3, 100, 0)], "update_inventory": [row(100, 50, 4)]}
+    )
+    result = await stock.reserve(conn, DC_ID, PRODUCT_ID, 50)
+    update = conn.calls_of("update_inventory")[0]
+    assert re.search(r"qty_reserved\s*=\s*qty_reserved\s*\+\s*\$\d", update.sql)
+    assert re.search(r"version\s*=\s*\$\d", update.sql)
+    assert re.search(r"qty_on_hand\s*-\s*qty_reserved\s*>=\s*\$\d", update.sql)
+    assert not re.search(r"version\s*=\s*(inventory\.)?version\s*\+", update.sql)
+    assert 3 in update.args and 50 in update.args
+    assert (result["qty_on_hand"], result["qty_reserved"], result["version"]) == (100, 50, 4)
+    assert conn.kinds() == ["select_inventory", "update_inventory"]  # không ghi sổ, không outbox
+
+
+async def test_reserve_insufficient_stock_is_422() -> None:
+    conn = FakeConn({"select_inventory": [inv_row(3, 100, 70)], "update_inventory": [None]})
+    with pytest.raises(AppError) as exc:
+        await stock.reserve(conn, DC_ID, PRODUCT_ID, 50)
+    assert exc.value.error_code == ErrorCode.INSUFFICIENT_STOCK and exc.value.status_code == 422
+
+
+async def test_reserve_without_inventory_row_is_422() -> None:
+    conn = FakeConn({"select_inventory": [None]})
+    with pytest.raises(AppError) as exc:
+        await stock.reserve(conn, DC_ID, PRODUCT_ID, 50)
+    assert exc.value.error_code == ErrorCode.INSUFFICIENT_STOCK
+    assert "update_inventory" not in conn.kinds()
+
+
+async def test_reserve_retries_then_succeeds() -> None:
+    conn = FakeConn(
+        {
+            "select_inventory": [inv_row(3, 100, 0), inv_row(4, 100, 0)],
+            "update_inventory": [None, row(100, 50, 5)],
+        }
+    )
+    result = await stock.reserve(conn, DC_ID, PRODUCT_ID, 50)
+    updates = conn.calls_of("update_inventory")
+    assert len(updates) == 2 and 3 in updates[0].args and 4 in updates[1].args
+    assert result["version"] == 5
+
+
+async def test_reserve_version_conflict_after_retries_exhausted() -> None:
+    conn = FakeConn(
+        {"select_inventory": [inv_row(v, 100, 0) for v in range(3, 20)], "update_inventory": [None]}
+    )
+    with pytest.raises(AppError) as exc:
+        await stock.reserve(conn, DC_ID, PRODUCT_ID, 50)
+    assert exc.value.error_code == ErrorCode.VERSION_CONFLICT and exc.value.status_code == 409
+    assert len(conn.calls_of("update_inventory")) == 1 + VERSION_CONFLICT_MAX_RETRIES
+
+
+async def test_release_update_lowers_reserved_conditionally() -> None:
+    conn = FakeConn(
+        {"select_inventory": [inv_row(3, 100, 50)], "update_inventory": [row(100, 40, 4)]}
+    )
+    result = await stock.release(conn, DC_ID, PRODUCT_ID, 10)
+    update = conn.calls_of("update_inventory")[0]
+    assert re.search(r"qty_reserved\s*=\s*qty_reserved\s*-\s*\$\d", update.sql)
+    assert re.search(r"version\s*=\s*\$\d", update.sql)
+    assert re.search(r"qty_reserved\s*>=\s*\$\d", update.sql)
+    assert not re.search(r"version\s*=\s*(inventory\.)?version\s*\+", update.sql)
+    assert 3 in update.args and 10 in update.args
+    assert (result["qty_reserved"], result["version"]) == (40, 4)
+    assert conn.kinds() == ["select_inventory", "update_inventory"]
+
+
+async def test_release_more_than_reserved_is_invalid_state() -> None:
+    # H1: không nhả được quá số đang giữ -> 409 INVALID_STATE, không để CHECK của DB báo lỗi 500
+    conn = FakeConn({"select_inventory": [inv_row(3, 100, 5)], "update_inventory": [None]})
+    with pytest.raises(AppError) as exc:
+        await stock.release(conn, DC_ID, PRODUCT_ID, 10)
+    assert exc.value.error_code == ErrorCode.INVALID_STATE and exc.value.status_code == 409
+
+
+async def test_release_without_inventory_row_is_invalid_state() -> None:
+    conn = FakeConn({"select_inventory": [None]})  # H2
+    with pytest.raises(AppError) as exc:
+        await stock.release(conn, DC_ID, PRODUCT_ID, 10)
+    assert exc.value.error_code == ErrorCode.INVALID_STATE
+    assert "update_inventory" not in conn.kinds()
+
+
+async def test_release_retries_and_gives_up_like_reserve() -> None:
+    ok = FakeConn(
+        {
+            "select_inventory": [inv_row(3, 100, 50), inv_row(4, 100, 50)],
+            "update_inventory": [None, row(100, 40, 5)],
+        }
+    )
+    assert (await stock.release(ok, DC_ID, PRODUCT_ID, 10))["version"] == 5
+    bad = FakeConn(
+        {
+            "select_inventory": [inv_row(v, 100, 50) for v in range(3, 20)],
+            "update_inventory": [None],
+        }
+    )
+    with pytest.raises(AppError) as exc:
+        await stock.release(bad, DC_ID, PRODUCT_ID, 10)
+    assert exc.value.error_code == ErrorCode.VERSION_CONFLICT
+    assert len(bad.calls_of("update_inventory")) == 1 + VERSION_CONFLICT_MAX_RETRIES
+
+
+def test_signatures_match_transfers_router_usage() -> None:
+    # node-api/routers/transfers.py (Minh Hiếu) gọi đúng các dạng này; lệch là TypeError khi chạy
+    inspect.signature(stock.write_outbox).bind(
+        None, 1, AggregateType.INVENTORY, "1:1", EventType.INVENTORY_CHANGED, {}
+    )
+    inspect.signature(stock.reserve).bind(None, 1, 1, 5)
+    inspect.signature(stock.release).bind(None, 1, 1, 5)
 
 
 # ---------------------------------------------------------------------------

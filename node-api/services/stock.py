@@ -1,12 +1,15 @@
 """Nơi DUY NHẤT chứa SQL thay đổi inventory, stock_movement, outbox_event – F10.a–e (Tuấn Minh).
 
 Các hàm nhận kết nối asyncpg đang nằm trong transaction do router mở; không hàm nào tự mở
-transaction hay gọi HTTP. Còn thiếu cho Saga (Minh Hiếu): reserve, release.
+transaction, tự COMMIT hay gọi HTTP. reserve, release, write_outbox có chữ ký đúng như
+node-api/routers/transfers.py (Minh Hiếu) gọi.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -22,7 +25,6 @@ from common.constants import (
     RefType,
 )
 from common.errors import AppError
-from common.ids import inventory_aggregate_id
 
 log = logging.getLogger("node-api")
 
@@ -162,6 +164,88 @@ async def add_stock(
     return _result(row)
 
 
+# Ba câu UPDATE có điều kiện version (db.md 2.7): $1 qty, $2 dc_id, $3 product_id, $4 version
+_SQL_CONSUME = (
+    "UPDATE inventory SET qty_on_hand = qty_on_hand - $1, updated_at = now() "
+    "WHERE dc_id = $2 AND product_id = $3 AND version = $4 "
+    "AND qty_on_hand - qty_reserved >= $1 "
+    "RETURNING qty_on_hand, qty_reserved, version"
+)
+_SQL_RESERVE = (
+    "UPDATE inventory SET qty_reserved = qty_reserved + $1, updated_at = now() "
+    "WHERE dc_id = $2 AND product_id = $3 AND version = $4 "
+    "AND qty_on_hand - qty_reserved >= $1 "
+    "RETURNING qty_on_hand, qty_reserved, version"
+)
+_SQL_RELEASE = (
+    "UPDATE inventory SET qty_reserved = qty_reserved - $1, updated_at = now() "
+    "WHERE dc_id = $2 AND product_id = $3 AND version = $4 "
+    "AND qty_reserved >= $1 "
+    "RETURNING qty_on_hand, qty_reserved, version"
+)
+
+
+def _insufficient(dc_id: int, product_id: int, qty: int, row: asyncpg.Record | None) -> AppError:
+    available = 0 if row is None else row["qty_on_hand"] - row["qty_reserved"]
+    log.warning(
+        "INSUFFICIENT_STOCK kho %s SKU %s: cần %s, khả dụng %s", dc_id, product_id, qty, available
+    )
+    return AppError(
+        ErrorCode.INSUFFICIENT_STOCK,
+        "Không đủ hàng khả dụng",
+        {"product_id": product_id, "requested": qty, "available": available},
+    )
+
+
+def _nothing_to_release(
+    dc_id: int, product_id: int, qty: int, row: asyncpg.Record | None
+) -> AppError:
+    reserved = 0 if row is None else row["qty_reserved"]
+    return AppError(
+        ErrorCode.INVALID_STATE,
+        "Số lượng giữ chỗ nhỏ hơn số cần nhả",
+        {"dc_id": dc_id, "product_id": product_id, "requested": qty, "reserved": reserved},
+    )
+
+
+async def _update_optimistic(
+    conn: asyncpg.Connection,
+    sql: str,
+    dc_id: int,
+    product_id: int,
+    qty: int,
+    on_unchanged: Callable[[int, int, int, asyncpg.Record | None], AppError],
+) -> asyncpg.Record:
+    """Đọc version, UPDATE có điều kiện, không ra dòng thì đọc lại (db.md 2.7).
+
+    Version đã đổi thì thử lại (tối đa VERSION_CONFLICT_MAX_RETRIES lần sau lần đầu); version vẫn
+    như cũ nghĩa là điều kiện khả dụng không thỏa, lỗi do on_unchanged quyết định.
+    """
+    current = await _read_version(conn, dc_id, product_id)
+    if current is None:  # chưa có dòng tồn
+        raise on_unchanged(dc_id, product_id, qty, None)
+    for _attempt in range(1 + VERSION_CONFLICT_MAX_RETRIES):
+        row = await conn.fetchrow(sql, qty, dc_id, product_id, current["version"])
+        if row is not None:
+            return row
+        fresh = await _read_version(conn, dc_id, product_id)
+        if fresh is None or fresh["version"] == current["version"]:
+            raise on_unchanged(dc_id, product_id, qty, fresh)
+        log.warning(
+            "VERSION_CONFLICT kho %s SKU %s: version %s -> %s, thử lại",
+            dc_id,
+            product_id,
+            current["version"],
+            fresh["version"],
+        )
+        current = fresh
+    raise AppError(
+        ErrorCode.VERSION_CONFLICT,
+        "Xung đột version, hết số lần thử lại",
+        {"product_id": product_id, "retries": VERSION_CONFLICT_MAX_RETRIES},
+    )
+
+
 async def consume(
     conn: asyncpg.Connection,
     *,
@@ -172,47 +256,8 @@ async def consume(
     created_by: str,
     ref_type: RefType,
 ) -> StockResult:
-    """F10.a bước 2 (xuất) và bước 3, khóa lạc quan theo version (db.md 2.7).
-
-    UPDATE không ra dòng thì đọc lại: version đã đổi thì thử lại (tối đa
-    VERSION_CONFLICT_MAX_RETRIES lần sau lần đầu), version vẫn như cũ nghĩa là không đủ hàng.
-    """
-    current = await _read_version(conn, dc_id, product_id)
-    if current is None:  # chưa có dòng tồn: khả dụng 0
-        raise _insufficient(dc_id, product_id, qty, 0)
-
-    for _attempt in range(1 + VERSION_CONFLICT_MAX_RETRIES):
-        row = await conn.fetchrow(
-            "UPDATE inventory SET qty_on_hand = qty_on_hand - $1, updated_at = now() "
-            "WHERE dc_id = $2 AND product_id = $3 AND version = $4 "
-            "AND qty_on_hand - qty_reserved >= $1 "
-            "RETURNING qty_on_hand, qty_reserved, version",
-            qty,
-            dc_id,
-            product_id,
-            current["version"],
-        )
-        if row is not None:
-            break
-        fresh = await _read_version(conn, dc_id, product_id)
-        if fresh is None or fresh["version"] == current["version"]:
-            available = 0 if fresh is None else fresh["qty_on_hand"] - fresh["qty_reserved"]
-            raise _insufficient(dc_id, product_id, qty, available)
-        log.warning(
-            "VERSION_CONFLICT kho %s SKU %s: version %s -> %s, thử lại",
-            dc_id,
-            product_id,
-            current["version"],
-            fresh["version"],
-        )
-        current = fresh
-    else:
-        raise AppError(
-            ErrorCode.VERSION_CONFLICT,
-            "Xung đột version khi xuất hàng, hết số lần thử lại",
-            {"product_id": product_id, "retries": VERSION_CONFLICT_MAX_RETRIES},
-        )
-
+    """F10.a bước 2 (xuất) và bước 3, khóa lạc quan theo version (db.md 2.7)."""
+    row = await _update_optimistic(conn, _SQL_CONSUME, dc_id, product_id, qty, _insufficient)
     await _insert_movement(
         conn,
         request_id=request_id,
@@ -226,48 +271,49 @@ async def consume(
     return _result(row)
 
 
-def _insufficient(dc_id: int, product_id: int, qty: int, available: int) -> AppError:
-    log.warning(
-        "INSUFFICIENT_STOCK kho %s SKU %s: cần %s, khả dụng %s", dc_id, product_id, qty, available
-    )
-    return AppError(
-        ErrorCode.INSUFFICIENT_STOCK,
-        "Không đủ hàng khả dụng",
-        {"product_id": product_id, "requested": qty, "available": available},
-    )
+async def reserve(
+    conn: asyncpg.Connection, dc_id: int, product_id: int, qty: int
+) -> asyncpg.Record:
+    """F10.b bước 3: giữ chỗ qty thùng. Trả dòng RETURNING (version, qty_on_hand, qty_reserved).
+
+    Thiếu hàng khả dụng: INSUFFICIENT_STOCK (422). Hết số lần thử lại: VERSION_CONFLICT (409).
+    Không ghi sổ: giữ chỗ không đổi qty_on_hand; người gọi ghi outbox.
+    """
+    return await _update_optimistic(conn, _SQL_RESERVE, dc_id, product_id, qty, _insufficient)
+
+
+async def release(
+    conn: asyncpg.Connection, dc_id: int, product_id: int, qty: int
+) -> asyncpg.Record:
+    """F10.e bước 2: nhả qty thùng giữ chỗ. Trả dòng RETURNING như reserve.
+
+    Nhả quá số đang giữ hoặc chưa có dòng tồn: INVALID_STATE (409).
+    """
+    return await _update_optimistic(conn, _SQL_RELEASE, dc_id, product_id, qty, _nothing_to_release)
 
 
 async def write_outbox(
     conn: asyncpg.Connection,
-    *,
     dc_id: int,
-    product_id: int,
-    qty_on_hand: int,
-    qty_reserved: int,
-    version: int,
-    request_id: UUID,
-    ref_type: RefType,
+    aggregate_type: AggregateType | str,
+    aggregate_id: str,
+    event_type: EventType | str,
+    payload: Mapping[str, Any],
 ) -> None:
-    """F10.a bước 4: một sự kiện InventoryChanged (F8, db.md 2.11) cùng transaction.
+    """F10.a bước 4: một dòng outbox_event cùng transaction (F8, db.md 2.11).
 
-    event_id và occurred_at sinh ở kho (gen_random_uuid, clock_timestamp), ghi cả vào payload.
+    event_id và occurred_at sinh ở kho (gen_random_uuid, clock_timestamp); event_id, event_type,
+    source_dc, occurred_at được ghi vào payload và thắng khóa trùng của người gọi.
     """
     await conn.execute(
         "INSERT INTO outbox_event (event_id, aggregate_type, aggregate_id, event_type, payload) "
-        "SELECT e.id, $1::text, $2::text, $3::text, jsonb_build_object("
-        "'event_id', e.id, 'event_type', $3::text, 'source_dc', $4::int, "
-        "'occurred_at', clock_timestamp(), 'product_id', $5::bigint, "
-        "'qty_on_hand', $6::int, 'qty_reserved', $7::int, 'version', $8::bigint, "
-        "'request_id', $9::uuid, 'ref_type', $10::text) "
+        "SELECT e.id, $1::text, $2::text, $3::text, "
+        "$4::jsonb || jsonb_build_object('event_id', e.id, 'event_type', $3::text, "
+        "'source_dc', $5::int, 'occurred_at', clock_timestamp()) "
         "FROM (SELECT gen_random_uuid() AS id) e",
-        AggregateType.INVENTORY,
-        inventory_aggregate_id(dc_id, product_id),
-        EventType.INVENTORY_CHANGED,
+        str(aggregate_type),
+        aggregate_id,
+        str(event_type),
+        json.dumps(payload, default=str),
         dc_id,
-        product_id,
-        qty_on_hand,
-        qty_reserved,
-        version,
-        request_id,
-        ref_type,
     )

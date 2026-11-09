@@ -11,8 +11,15 @@ from typing import Any
 from fastapi import APIRouter, Request
 from services import stock
 
-from common.constants import SQL_SET_APP_SOURCE, ErrorCode, NodeMode
+from common.constants import (
+    SQL_SET_APP_SOURCE,
+    AggregateType,
+    ErrorCode,
+    EventType,
+    NodeMode,
+)
 from common.errors import AppError
+from common.ids import inventory_aggregate_id
 from common.models import (
     InboundRequest,
     InventoryItem,
@@ -80,13 +87,18 @@ async def _apply(
                     )
                     await stock.write_outbox(  # bước 4
                         conn,
-                        dc_id=state.dc_id,
-                        product_id=body.product_id,
-                        qty_on_hand=result.qty_on_hand,
-                        qty_reserved=result.qty_reserved,
-                        version=result.version,
-                        request_id=body.request_id,
-                        ref_type=body.ref_type,
+                        state.dc_id,
+                        AggregateType.INVENTORY,
+                        inventory_aggregate_id(state.dc_id, body.product_id),
+                        EventType.INVENTORY_CHANGED,
+                        {
+                            "product_id": body.product_id,
+                            "qty_on_hand": result.qty_on_hand,
+                            "qty_reserved": result.qty_reserved,
+                            "version": result.version,
+                            "request_id": body.request_id,
+                            "ref_type": body.ref_type,
+                        },
                     )
                     return StockChangeResponse(
                         qty_on_hand=result.qty_on_hand, version=result.version
