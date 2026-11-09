@@ -128,6 +128,10 @@ def insufficient() -> httpx.Response:
     return httpx.Response(422, json=error_body("INSUFFICIENT_STOCK", "Không đủ hàng"))
 
 
+def validation_error() -> httpx.Response:
+    return httpx.Response(400, json=error_body("VALIDATION_ERROR", "SKU không có trong danh mục"))
+
+
 def txn(txn_type: TxnType, qty: int, minute: int, dc_id: int = DC_TRUNG) -> Txn:
     return Txn(uuid4(), dc_id, txn_type, qty, T0 + timedelta(minutes=minute))
 
@@ -147,7 +151,10 @@ def worker_for(store: FakeReplayStore, *nodes: FakeNode) -> ReplayWorker:
         (insufficient(), Outcome.REJECTED),
         (httpx.Response(500), Outcome.STOP),
         (httpx.Response(503, json=error_body("DC_UNREACHABLE", "x")), Outcome.STOP),
-        (httpx.Response(400, json=error_body("VALIDATION_ERROR", "x")), Outcome.STOP),
+        (validation_error(), Outcome.REJECTED),
+        (httpx.Response(400, text="<html>"), Outcome.STOP),
+        (httpx.Response(401, json=error_body("UNAUTHORIZED", "x")), Outcome.STOP),
+        (httpx.Response(409, json=error_body("VERSION_CONFLICT", "x")), Outcome.STOP),
         (httpx.Response(200, text="<html>"), Outcome.STOP),
     ],
 )
@@ -246,26 +253,51 @@ async def test_tc16_rejected_row_records_error_and_continues() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4xx khác 422: dừng vòng, giữ PENDING, log ERROR (Minh Danh chốt)
+# 400 VALIDATION_ERROR: dữ liệu lệnh sai, gửi lại vẫn sai -> REJECTED như 422 (F10.i, F9)
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("status", [400, 401, 404])
+async def test_validation_error_rejects_row_and_continues() -> None:
+    t_bad, t_next = txn(TxnType.OUTBOUND, 10, 1), txn(TxnType.INBOUND, 5, 2)
+    store = FakeReplayStore({DC_TRUNG: DcStatus.RECOVERING}, [t_bad, t_next])
+    node = FakeNode()
+    node.replies = {
+        str(t_bad.txn_id): validation_error(),
+        str(t_next.txn_id): ok(True),
+    }
+    await worker_for(store, node).tick()
+    assert t_bad.status == PendingTxnStatus.REJECTED
+    assert t_bad.error_msg is not None and t_bad.error_msg.startswith("VALIDATION_ERROR")
+    assert t_next.status == PendingTxnStatus.APPLIED  # không kẹt kho ở RECOVERING
+    assert store.dc_status[DC_TRUNG] == DcStatus.ONLINE
+
+
+# ---------------------------------------------------------------------------
+# 4xx khác (401, 404, 409 VERSION_CONFLICT, 400 không phải VALIDATION_ERROR): dừng vòng, giữ
+# PENDING, log ERROR – có thể tự hết hoặc do cấu hình, không được làm mất giao dịch (F10.i)
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        (401, "UNAUTHORIZED"),
+        (404, "NOT_FOUND"),
+        (409, "VERSION_CONFLICT"),
+        (400, "SOMETHING_ELSE"),
+    ],
+)
 async def test_other_4xx_logs_error_with_txn_and_code(
-    status: int, caplog: pytest.LogCaptureFixture
+    status: int, code: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """4xx khác 422: giữ PENDING, dừng vòng, log ERROR kèm txn_id và error_code."""
+    """4xx khác: giữ PENDING, dừng vòng, log ERROR kèm txn_id và error_code."""
     t1, t2 = txn(TxnType.INBOUND, 30, 1), txn(TxnType.OUTBOUND, 10, 2)
     store = FakeReplayStore({DC_TRUNG: DcStatus.RECOVERING}, [t1, t2])
     node = FakeNode()
-    node.replies = {
-        str(t1.txn_id): httpx.Response(status, json=error_body("VALIDATION_ERROR", "x"))
-    }
+    node.replies = {str(t1.txn_id): httpx.Response(status, json=error_body(code, "x"))}
     with caplog.at_level("ERROR", logger="hq-api.replay"):
         await worker_for(store, node).tick()
     assert (t1.status, t2.status) == (PendingTxnStatus.PENDING, PendingTxnStatus.PENDING)
     assert len(node.replayed) == 1 and node.complete_calls == 0
     errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     assert len(errors) == 1
-    assert str(t1.txn_id) in errors[0] and "VALIDATION_ERROR" in errors[0]
+    assert str(t1.txn_id) in errors[0] and code in errors[0]
 
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ from common.constants import (
     REPLAY_INTERVAL_S,
     REPLAY_ROUND_MAX_S,
     DcStatus,
+    ErrorCode,
     PendingTxnStatus,
     TxnType,
 )
@@ -46,7 +47,7 @@ class Outcome(Enum):
 
     SENT = "sent"  # 200, duplicate=false: sang dòng kế, chờ Consumer chuyển APPLIED
     APPLIED = "applied"  # 200, duplicate=true: chuyển thẳng APPLIED
-    REJECTED = "rejected"  # 422: chuyển REJECTED, ghi error_msg
+    REJECTED = "rejected"  # 422 hoặc 400 VALIDATION_ERROR: chuyển REJECTED, ghi error_msg
     STOP = "stop"  # lỗi mạng, 5xx: dừng vòng của kho này
 
 
@@ -87,8 +88,11 @@ def classify(resp: httpx.Response) -> Outcome:
         return Outcome.APPLIED if replay.duplicate else Outcome.SENT
     if resp.status_code == 422:
         return Outcome.REJECTED
-    # 5xx theo F10.i; GIẢ ĐỊNH: 4xx khác (400, 401, 404) cũng dừng vòng và giữ PENDING,
-    # vì spec chỉ cho phép REJECTED khi kho trả 422.
+    # F10.i: 400 VALIDATION_ERROR là dữ liệu lệnh sai (vd. SKU không có ở kho), gửi lại vẫn sai
+    if resp.status_code == 400 and error_code_of(resp) == ErrorCode.VALIDATION_ERROR:
+        return Outcome.REJECTED
+    # Lỗi mạng, 5xx và các 4xx khác (401, 409 VERSION_CONFLICT…) có thể tự hết hoặc do cấu hình:
+    # dừng vòng, giữ PENDING, vòng sau gửi lại (F10.i)
     return Outcome.STOP
 
 
@@ -253,7 +257,7 @@ class ReplayWorker:
             await self.store.mark_rejected(row.txn_id, msg)
             log.warning("Kho %s: replay %s bị từ chối: %s", dc_id, row.txn_id, msg)
         elif 400 <= resp.status_code < 500:
-            # 4xx khác 422: không tự sửa được bằng gửi lại, cần người xem (Minh Danh chốt mục 12)
+            # 4xx còn lại (401, 404, 409…): giữ PENDING và dừng vòng; log ERROR để người xem (F10.i)
             log.error(
                 "Kho %s: replay txn_id=%s trả %s error_code=%s, giữ PENDING, dừng vòng",
                 dc_id,
