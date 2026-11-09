@@ -323,3 +323,94 @@ def test_get_inventory_unknown_product_is_404(env: Env) -> None:
 def test_router_contains_no_write_sql() -> None:
     src = (Path(main.__file__).parent / "routers" / "inventory.py").read_text(encoding="utf-8")
     assert not re.search(r"\b(insert\s+into|update\s+\w+\s+set|delete\s+from)\b", src, re.I)
+
+
+# ---------------------------------------------------------------------------
+# POST /replay (F6, F10.a): HQ đẩy lại giao dịch ghi hộ; nhận ở cả hai chế độ
+# ---------------------------------------------------------------------------
+KEY = {"X-Internal-Key": "khoa-test"}
+
+
+def replay_body(**over: Any) -> dict[str, Any]:
+    body = {
+        "request_id": REQ,
+        "txn_type": "OUTBOUND",
+        "product_id": 1,
+        "qty": 10,
+        "created_by": "hq-replay",
+    }
+    return {**body, **over}
+
+
+def test_replay_outbound_follows_f10a_order(env: Env) -> None:
+    r = env.client.post("/replay", json=replay_body(), headers=KEY)
+    assert r.status_code == 200
+    assert r.json() == {"qty_on_hand": 15, "duplicate": False}
+    assert env.events == [
+        "sql:set_local",
+        "movement_exists",
+        "product_exists",
+        "consume",
+        "write_outbox",
+    ]
+    assert [t.committed for t in env.conn.transactions] == [True]
+    call = env.kw["consume"]
+    assert (call["dc_id"], call["product_id"], call["qty"]) == (DC_ID, 1, 10)
+    assert str(call["ref_type"]) == "REPLAY" and call["created_by"] == "hq-replay"
+
+
+def test_replay_event_carries_request_id_and_replay_ref_type(env: Env) -> None:
+    # Consumer dựa vào request_id trong InventoryChanged để chuyển pending_txn sang APPLIED
+    env.client.post("/replay", json=replay_body(), headers=KEY)
+    assert_inventory_event(env, qty_on_hand=15, qty_reserved=0, version=4, ref_type="REPLAY")
+
+
+def test_replay_inbound_uses_add_stock(env: Env) -> None:
+    r = env.client.post("/replay", json=replay_body(txn_type="INBOUND", qty=30), headers=KEY)
+    assert r.status_code == 200 and r.json() == {"qty_on_hand": 20, "duplicate": False}
+    assert "add_stock" in env.events and "consume" not in env.events
+    assert str(env.kw["add_stock"]["ref_type"]) == "REPLAY"
+
+
+def test_replay_accepted_while_recovering(env: Env) -> None:
+    env.client.app.state.mode = NodeMode.RECOVERING
+    r = env.client.post("/replay", json=replay_body(), headers=KEY)
+    assert r.status_code == 200
+    assert "consume" in env.events
+
+
+def test_replay_requires_internal_key(env: Env) -> None:
+    r = env.client.post("/replay", json=replay_body())
+    assert r.status_code == 401
+    assert env.events == []
+
+
+def test_replay_duplicate_returns_current_stock_without_consuming(env: Env) -> None:
+    env.fake("movement_exists", True)
+    r = env.client.post("/replay", json=replay_body(), headers=KEY)
+    assert r.status_code == 200
+    assert r.json() == {"qty_on_hand": 20, "duplicate": True}
+    assert not {"add_stock", "consume", "write_outbox"} & set(env.events)
+
+
+def test_replay_duplicate_at_step3_rolls_back(env: Env) -> None:
+    env.fake("consume", raises=stock.DuplicateRequest())
+    r = env.client.post("/replay", json=replay_body(), headers=KEY)
+    assert r.status_code == 200 and r.json()["duplicate"] is True
+    assert "write_outbox" not in env.events
+    assert any(t.rolled_back for t in env.conn.transactions)
+
+
+def test_replay_insufficient_stock_is_422(env: Env) -> None:
+    env.fake("consume", raises=AppError(ErrorCode.INSUFFICIENT_STOCK, "không đủ hàng"))
+    r = env.client.post("/replay", json=replay_body(qty=100), headers=KEY)
+    assert r.status_code == 422
+    assert r.json()["error_code"] == ErrorCode.INSUFFICIENT_STOCK
+    assert "write_outbox" not in env.events
+
+
+@pytest.mark.parametrize("body", [replay_body(qty=0), replay_body(txn_type="TRANSFER")])
+def test_replay_invalid_body_is_400_before_any_sql(env: Env, body: dict[str, Any]) -> None:
+    r = env.client.post("/replay", json=body, headers=KEY)
+    assert r.status_code == 400
+    assert env.events == []
