@@ -1,6 +1,6 @@
 """GET /inventory, POST /inbound, /outbound, /replay – F6, F10.a (Tuấn Minh).
 
-GET /health nằm ở main.py. /replay làm ở việc riêng.
+GET /health nằm ở main.py.
 """
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ from common.constants import (
     ErrorCode,
     EventType,
     NodeMode,
+    RefType,
+    TxnType,
 )
 from common.errors import AppError
 from common.ids import inventory_aggregate_id
@@ -25,6 +27,8 @@ from common.models import (
     InventoryItem,
     InventoryResponse,
     OutboundRequest,
+    ReplayRequest,
+    ReplayResponse,
     StockChangeResponse,
 )
 
@@ -57,12 +61,19 @@ async def get_inventory(request: Request, product_id: int | None = None) -> Inve
 
 async def _apply(
     request: Request,
-    body: InboundRequest | OutboundRequest,
+    body: InboundRequest | OutboundRequest | ReplayRequest,
     op: Callable[..., Awaitable[stock.StockResult]],
+    ref_type: RefType,
+    *,
+    from_wms: bool = True,
 ) -> StockChangeResponse:
-    """F10.a: SET LOCAL, kiểm trùng, đổi tồn + sổ, outbox, COMMIT. Không gọi HTTP trong đây."""
+    """F10.a: SET LOCAL, kiểm trùng, đổi tồn + sổ, outbox, COMMIT. Không gọi HTTP trong đây.
+
+    from_wms=False cho /replay: HQ đẩy lại giao dịch ghi hộ, nhận ở cả hai chế độ.
+    """
     state = request.app.state
-    if state.mode == NodeMode.RECOVERING:  # bước 1: lệnh từ WMS bị từ chối khi đang đồng bộ
+    # bước 1: lệnh từ WMS bị từ chối khi đang đồng bộ (/replay vẫn chạy)
+    if from_wms and state.mode == NodeMode.RECOVERING:
         raise AppError(ErrorCode.DC_RECOVERING, "Kho đang đồng bộ, chưa nhận giao dịch")
 
     async with state.pool.acquire() as conn:
@@ -83,7 +94,7 @@ async def _apply(
                         qty=body.qty,
                         request_id=body.request_id,
                         created_by=body.created_by,
-                        ref_type=body.ref_type,
+                        ref_type=ref_type,
                     )
                     await stock.write_outbox(  # bước 4
                         conn,
@@ -97,7 +108,7 @@ async def _apply(
                             "qty_reserved": result.qty_reserved,
                             "version": result.version,
                             "request_id": body.request_id,
-                            "ref_type": body.ref_type,
+                            "ref_type": ref_type,
                         },
                     )
                     return StockChangeResponse(
@@ -116,10 +127,18 @@ async def _apply(
 @router.post("/inbound", response_model=StockChangeResponse)
 async def inbound(request: Request, body: InboundRequest) -> StockChangeResponse:
     """F6, F10.a: nhập hàng."""
-    return await _apply(request, body, stock.add_stock)
+    return await _apply(request, body, stock.add_stock, body.ref_type)
 
 
 @router.post("/outbound", response_model=StockChangeResponse)
 async def outbound(request: Request, body: OutboundRequest) -> StockChangeResponse:
     """F6, F10.a: xuất hàng."""
-    return await _apply(request, body, stock.consume)
+    return await _apply(request, body, stock.consume, body.ref_type)
+
+
+@router.post("/replay", response_model=ReplayResponse)
+async def replay(request: Request, body: ReplayRequest) -> ReplayResponse:
+    """F6, F10.a: HQ đẩy lại giao dịch ghi hộ (pending_txn); request_id = txn_id; X-Internal-Key."""
+    op = stock.add_stock if body.txn_type == TxnType.INBOUND else stock.consume
+    done = await _apply(request, body, op, RefType.REPLAY, from_wms=False)
+    return ReplayResponse(qty_on_hand=done.qty_on_hand, duplicate=done.duplicate)
