@@ -26,7 +26,13 @@ import pytest
 from node_fakes import FakeConn
 from services import stock
 
-from common.constants import VERSION_CONFLICT_MAX_RETRIES, AggregateType, ErrorCode, EventType
+from common.constants import (
+    VERSION_CONFLICT_MAX_RETRIES,
+    AggregateType,
+    ErrorCode,
+    EventType,
+    LockMode,
+)
 from common.errors import AppError
 
 DC_ID = 3
@@ -212,6 +218,42 @@ async def test_consume_raises_duplicate_when_movement_conflicts() -> None:
     )
     with pytest.raises(stock.DuplicateRequest):
         await consume(conn)
+
+
+# ---------------------------------------------------------------------------
+# LOCK_MODE=none (F2): chỉ dùng cho make race-unsafe, đọc rồi ghi đè, không kiểm tra version
+# ---------------------------------------------------------------------------
+async def test_consume_lock_mode_none_overwrites_without_version_check() -> None:
+    conn = FakeConn(
+        {
+            "select_inventory": [inv_row(9, 100, 0)],
+            "update_inventory": [row(70, 0, 4)],
+            "insert_movement": [MOVEMENT_OK],
+        }
+    )
+    result = await stock.consume(
+        conn, dc_id=DC_ID, product_id=PRODUCT_ID, qty=30, request_id=REQ,
+        created_by=WHO, ref_type="ISSUE", lock_mode=LockMode.NONE,
+    )  # fmt: skip
+    updates = conn.calls_of("update_inventory")
+    assert len(updates) == 1  # không thử lại theo version
+    sql = updates[0].sql
+    assert not re.search(r"version\s*=\s*\$\d", sql)  # không điều kiện version
+    assert re.search(r"qty_on_hand\s*=\s*\$\d", sql)  # ghi đè giá trị tính từ lần đọc
+    assert 70 in updates[0].args and 9 not in updates[0].args
+    assert result.qty_on_hand == 70
+    assert conn.kinds()[-1] == "insert_movement"  # sổ vẫn ghi: tồn và sổ sẽ lệch khi tranh chấp
+
+
+async def test_consume_lock_mode_none_still_checks_availability_on_the_read() -> None:
+    conn = FakeConn({"select_inventory": [inv_row(3, 20, 20)]})
+    with pytest.raises(AppError) as exc:
+        await stock.consume(
+            conn, dc_id=DC_ID, product_id=PRODUCT_ID, qty=30, request_id=REQ,
+            created_by=WHO, ref_type="ISSUE", lock_mode=LockMode.NONE,
+        )  # fmt: skip
+    assert exc.value.error_code == ErrorCode.INSUFFICIENT_STOCK
+    assert "update_inventory" not in conn.kinds()
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from node_fakes import FakeConn, FakePool
 from services import stock
 
-from common.constants import SQL_SET_APP_SOURCE, ErrorCode, NodeMode
+from common.constants import SQL_SET_APP_SOURCE, ErrorCode, LockMode, NodeMode
 from common.errors import AppError
 
 DC_ID = 3
@@ -414,3 +414,24 @@ def test_replay_invalid_body_is_400_before_any_sql(env: Env, body: dict[str, Any
     r = env.client.post("/replay", json=body, headers=KEY)
     assert r.status_code == 400
     assert env.events == []
+
+
+# ---------------------------------------------------------------------------
+# LOCK_MODE (F2): chỉ đường xuất mới phụ thuộc chế độ khóa
+# ---------------------------------------------------------------------------
+def test_outbound_passes_lock_mode_from_app_state(env: Env) -> None:
+    env.client.post("/outbound", json=outbound_body())
+    assert env.kw["consume"]["lock_mode"] == LockMode.OPTIMISTIC  # mặc định
+    env.client.app.state.lock_mode = LockMode.NONE
+    env.client.post(
+        "/outbound", json=outbound_body(request_id="55555555-5555-4555-8555-555555555555")
+    )
+    assert env.kw["consume"]["lock_mode"] == LockMode.NONE
+
+
+def test_replay_outbound_passes_lock_mode_but_inbound_paths_do_not(env: Env) -> None:
+    env.client.app.state.lock_mode = LockMode.NONE
+    env.client.post("/replay", json=replay_body(), headers=KEY)
+    assert env.kw["consume"]["lock_mode"] == LockMode.NONE
+    env.client.post("/inbound", json=inbound_body())
+    assert "lock_mode" not in env.kw["add_stock"]
