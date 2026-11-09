@@ -8,24 +8,35 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
+import httpx
 from fastapi import APIRouter, Request, Response
+from fastapi.responses import JSONResponse
 from services import stock
 
 from common.constants import (
+    HTTP_MAX_RETRIES,
+    HTTP_RETRY_INTERVAL_S,
+    HTTP_TIMEOUT_S,
     SQL_SET_APP_SOURCE,
     TRANSFER_PREV_STATUS,
     AggregateType,
     CancelReason,
     ErrorCode,
     EventType,
+    MovementType,
+    RefType,
     TransferDirection,
     TransferStatus,
 )
 from common.errors import AppError
-from common.ids import inventory_aggregate_id
+from common.ids import inventory_aggregate_id, transfer_movement_request_id
 from common.models import (
     CancelRequest,
+    DeclineRequest,
+    ReceivedCallback,
+    ShippedCallback,
     SyncStatusRequest,
+    TransferActionRequest,
     TransferNoticeRequest,
     TransferStatusResponse,
 )
@@ -99,22 +110,35 @@ def iso(value: datetime | None) -> str | None:
 
 
 async def write_inventory_event(
-    conn: asyncpg.Connection, dc_id: int, product_id: int, row: Mapping[str, Any]
+    conn: asyncpg.Connection,
+    dc_id: int,
+    product_id: int,
+    row: Mapping[str, Any],
+    *,
+    request_id: UUID | None = None,
+    ref_type: RefType | None = None,
 ) -> None:
-    """InventoryChanged của một SKU; số liệu lấy từ RETURNING của stock (F8, db.md 2.11)."""
-    # GIẢ ĐỊNH: InventoryChanged khi giữ chỗ hoặc nhả giữ chỗ không có request_id (db.md 3.4)
+    """InventoryChanged của một SKU; số liệu lấy từ RETURNING của stock (F8, db.md 2.11).
+
+    Xuất/nhận điều chuyển có dòng sổ nên kèm request_id tất định và ref_type TRANSFER (mẫu F8).
+    Giữ chỗ và nhả giữ chỗ không ghi sổ nên không có request_id (db.md 3.4).
+    """
+    payload: dict[str, Any] = {
+        "product_id": product_id,
+        "qty_on_hand": row["qty_on_hand"],
+        "qty_reserved": row["qty_reserved"],
+        "version": row["version"],
+    }
+    if request_id is not None:
+        payload["request_id"] = str(request_id)
+        payload["ref_type"] = ref_type
     await stock.write_outbox(
         conn,
         dc_id,
         AggregateType.INVENTORY,
         inventory_aggregate_id(dc_id, product_id),
         EventType.INVENTORY_CHANGED,
-        {
-            "product_id": product_id,
-            "qty_on_hand": row["qty_on_hand"],
-            "qty_reserved": row["qty_reserved"],
-            "version": row["version"],
-        },
+        payload,
     )
 
 
@@ -295,3 +319,267 @@ async def apply_sync_status(transfer_id: UUID, body: SyncStatusRequest, request:
             shipped_at=row["shipped_at"],
             received_at=row["received_at"],
         )
+
+
+# ---------------------------------------------------------------------------
+# ship, receive (F10.c, F10.d), decline (F6)
+# ---------------------------------------------------------------------------
+# F10.c bước 1 – chỉ bản OUTBOUND còn CREATED; F10.d bước 2 – chỉ bản INBOUND đang SHIPPED
+SQL_SHIP_ORDER = """
+UPDATE transfer_order SET status = $1, shipped_at = now()
+WHERE transfer_id = $2 AND direction = $3 AND status = $4
+RETURNING transfer_code, shipped_at
+"""
+
+SQL_RECEIVE_ORDER = """
+UPDATE transfer_order SET status = $1, received_at = now()
+WHERE transfer_id = $2 AND direction = $3 AND status = $4
+RETURNING transfer_code, shipped_at, received_at
+"""
+
+SQL_ORDER_STATE = """
+SELECT status, shipped_at, received_at FROM transfer_order
+WHERE transfer_id = $1 AND direction = $2
+"""
+
+# Theo product_id tăng dần, cùng thứ tự khóa dòng inventory với notice và cancel
+SQL_ORDER_LINES = """
+SELECT line_no, product_id, qty_requested FROM transfer_item
+WHERE transfer_id = $1 ORDER BY product_id
+"""
+
+SQL_SET_QTY_SHIPPED = """
+UPDATE transfer_item SET qty_shipped = qty_requested WHERE transfer_id = $1 AND line_no = $2
+"""
+
+SQL_SET_QTY_RECEIVED = """
+UPDATE transfer_item SET qty_received = qty_requested WHERE transfer_id = $1 AND line_no = $2
+"""
+
+# /decline: HQ gọi /cancel kho nguồn với thử lại F5 (5 × 2 + 4 × 2 = 18 giây) rồi mới trả lời,
+# nên kho đích chờ đủ chừng ấy và không tự gửi lại (WMS chờ 20 giây, F11).
+DECLINE_FORWARD_TIMEOUT_S = (
+    HTTP_MAX_RETRIES + 1
+) * HTTP_TIMEOUT_S + HTTP_MAX_RETRIES * HTTP_RETRY_INTERVAL_S
+
+
+class AlreadyDone(Exception):
+    """Bước đã chạy trước đó (gửi trùng): thoát khối transaction, trả duplicate (F5)."""
+
+    def __init__(self, status: TransferStatus, at: datetime) -> None:
+        super().__init__(status)
+        self.status = status
+        self.at = at
+
+
+def passthrough(resp: httpx.Response) -> JSONResponse:
+    """Trả nguyên phản hồi lỗi của bên được gọi (F5)."""
+    try:
+        content = resp.json()
+    except ValueError:
+        content = {"error_code": ErrorCode.DC_UNREACHABLE, "message": resp.text, "details": {}}
+    return JSONResponse(status_code=resp.status_code, content=content)
+
+
+async def forward_to_hq(request: Request, path: str, body: Any) -> JSONResponse | None:
+    """Callback lên HQ sau COMMIT (F6, F5). Lỗi mạng sau khi thử lại: 503 DC_UNREACHABLE.
+
+    HQ trả 4xx/5xx thì trả nguyên cho WMS (F5); trả None khi HQ nhận (2xx).
+    """
+    try:
+        resp = await request.app.state.hq.post(path, json=body)
+    except httpx.HTTPError as exc:
+        raise AppError(
+            ErrorCode.DC_UNREACHABLE,
+            "Không gọi được HQ; bấm lại thao tác, kho sẽ nhận ra lệnh trùng",
+            {"path": path, "error": type(exc).__name__},
+        ) from exc
+    if resp.status_code >= 400:
+        return passthrough(resp)
+    return None
+
+
+async def order_lines(conn: asyncpg.Connection, transfer_id: UUID) -> list[asyncpg.Record]:
+    """Dòng hàng theo product_id tăng dần: cùng thứ tự khóa inventory với notice, cancel."""
+    return sorted(await conn.fetch(SQL_ORDER_LINES, transfer_id), key=lambda r: r["product_id"])
+
+
+async def order_state(
+    conn: asyncpg.Connection, transfer_id: UUID, direction: TransferDirection
+) -> asyncpg.Record:
+    row = await conn.fetchrow(SQL_ORDER_STATE, transfer_id, direction)
+    if row is None:
+        raise AppError(
+            ErrorCode.NOT_FOUND, "Không có phiếu ở kho này", {"transfer_id": str(transfer_id)}
+        )
+    return row
+
+
+@router.post("/transfers/{transfer_id}/ship", response_model=TransferStatusResponse)
+async def ship(
+    transfer_id: UUID, body: TransferActionRequest, request: Request
+) -> TransferStatusResponse | JSONResponse:
+    """F6, F10.c: kho nguồn xuất hàng; COMMIT rồi mới gọi HQ /shipped."""
+    dc_id: int = request.app.state.dc_id
+    async with request.app.state.pool.acquire() as conn:
+        try:
+            async with conn.transaction():
+                await conn.execute(SQL_SET_APP_SOURCE)
+                # Bước 1
+                order = await conn.fetchrow(
+                    SQL_SHIP_ORDER,
+                    TransferStatus.SHIPPED,
+                    transfer_id,
+                    TransferDirection.OUTBOUND,
+                    TransferStatus.CREATED,
+                )
+                if order is None:
+                    current = await order_state(conn, transfer_id, TransferDirection.OUTBOUND)
+                    if current["status"] in (TransferStatus.SHIPPED, TransferStatus.RECEIVED):
+                        raise AlreadyDone(TransferStatus(current["status"]), current["shipped_at"])
+                    raise AppError(
+                        ErrorCode.INVALID_STATE,
+                        "Phiếu không còn ở trạng thái chờ xuất",
+                        {"status": current["status"]},
+                    )
+                # Bước 2: trừ tồn và giữ chỗ từng dòng, ghi sổ TRANSFER_OUT, qty_shipped
+                moved = []
+                for line in await order_lines(conn, transfer_id):
+                    request_id = transfer_movement_request_id(
+                        transfer_id, MovementType.TRANSFER_OUT, line["line_no"]
+                    )
+                    row = await stock.consume(
+                        conn,
+                        dc_id=dc_id,
+                        product_id=line["product_id"],
+                        qty=line["qty_requested"],
+                        request_id=request_id,
+                        created_by=body.created_by,
+                        movement_type=MovementType.TRANSFER_OUT,
+                        ref_id=str(transfer_id),
+                    )
+                    await conn.execute(SQL_SET_QTY_SHIPPED, transfer_id, line["line_no"])
+                    moved.append((line["product_id"], row, request_id))
+                # Bước 3
+                for product_id, row, request_id in moved:
+                    await write_inventory_event(
+                        conn, dc_id, product_id, row,
+                        request_id=request_id, ref_type=RefType.TRANSFER,
+                    )  # fmt: skip
+                await write_transfer_event(
+                    conn,
+                    dc_id,
+                    transfer_id,
+                    order["transfer_code"],
+                    TransferDirection.OUTBOUND,
+                    TransferStatus.SHIPPED,
+                    shipped_at=order["shipped_at"],
+                )
+        except AlreadyDone as done:
+            # Gửi trùng: không trừ kho lần nữa, gửi lại callback (F10.c bước 1)
+            error = await forward_to_hq(
+                request,
+                f"/transfers/{transfer_id}/shipped",
+                ShippedCallback(shipped_at=done.at).model_dump(mode="json"),
+            )
+            return error or TransferStatusResponse(status=done.status, duplicate=True)
+    # Sau COMMIT mới gọi HQ (không gọi HTTP trong transaction)
+    error = await forward_to_hq(
+        request,
+        f"/transfers/{transfer_id}/shipped",
+        ShippedCallback(shipped_at=order["shipped_at"]).model_dump(mode="json"),
+    )
+    return error or TransferStatusResponse(status=TransferStatus.SHIPPED)
+
+
+@router.post("/transfers/{transfer_id}/receive", response_model=TransferStatusResponse)
+async def receive(
+    transfer_id: UUID, body: TransferActionRequest, request: Request
+) -> TransferStatusResponse | JSONResponse:
+    """F6, F10.d: kho đích nhận hàng khi bản INBOUND đã SHIPPED; COMMIT rồi gọi HQ /received."""
+    dc_id: int = request.app.state.dc_id
+    async with request.app.state.pool.acquire() as conn:
+        try:
+            async with conn.transaction():
+                await conn.execute(SQL_SET_APP_SOURCE)
+                # Bước 1, 2: chỉ bản INBOUND đang SHIPPED (HQ đã đồng bộ qua /sync-status)
+                order = await conn.fetchrow(
+                    SQL_RECEIVE_ORDER,
+                    TransferStatus.RECEIVED,
+                    transfer_id,
+                    TransferDirection.INBOUND,
+                    TransferStatus.SHIPPED,
+                )
+                if order is None:
+                    current = await order_state(conn, transfer_id, TransferDirection.INBOUND)
+                    if current["status"] == TransferStatus.RECEIVED:
+                        raise AlreadyDone(TransferStatus.RECEIVED, current["received_at"])
+                    raise AppError(
+                        ErrorCode.INVALID_STATE,
+                        "Phiếu chưa được kho nguồn xuất (chưa SHIPPED)",
+                        {"status": current["status"]},
+                    )
+                # Bước 3: tăng tồn từng dòng, ghi sổ TRANSFER_IN, qty_received
+                moved = []
+                for line in await order_lines(conn, transfer_id):
+                    request_id = transfer_movement_request_id(
+                        transfer_id, MovementType.TRANSFER_IN, line["line_no"]
+                    )
+                    row = await stock.add_stock(
+                        conn,
+                        dc_id=dc_id,
+                        product_id=line["product_id"],
+                        qty=line["qty_requested"],
+                        request_id=request_id,
+                        created_by=body.created_by,
+                        movement_type=MovementType.TRANSFER_IN,
+                        ref_id=str(transfer_id),
+                    )
+                    await conn.execute(SQL_SET_QTY_RECEIVED, transfer_id, line["line_no"])
+                    moved.append((line["product_id"], row, request_id))
+                # Bước 4
+                for product_id, row, request_id in moved:
+                    await write_inventory_event(
+                        conn, dc_id, product_id, row,
+                        request_id=request_id, ref_type=RefType.TRANSFER,
+                    )  # fmt: skip
+                await write_transfer_event(
+                    conn,
+                    dc_id,
+                    transfer_id,
+                    order["transfer_code"],
+                    TransferDirection.INBOUND,
+                    TransferStatus.RECEIVED,
+                    shipped_at=order["shipped_at"],
+                    received_at=order["received_at"],
+                )
+        except AlreadyDone as done:
+            error = await forward_to_hq(
+                request,
+                f"/transfers/{transfer_id}/received",
+                ReceivedCallback(received_at=done.at).model_dump(mode="json"),
+            )
+            return error or TransferStatusResponse(status=done.status, duplicate=True)
+    error = await forward_to_hq(
+        request,
+        f"/transfers/{transfer_id}/received",
+        ReceivedCallback(received_at=order["received_at"]).model_dump(mode="json"),
+    )
+    return error or TransferStatusResponse(status=TransferStatus.RECEIVED)
+
+
+@router.post("/transfers/{transfer_id}/decline")
+async def decline(transfer_id: UUID, body: DeclineRequest, request: Request) -> JSONResponse:
+    """F6: chuyển tiếp đồng bộ tới HQ /decline, trả nguyên kết quả của HQ (F10.g)."""
+    try:
+        resp = await request.app.state.hq.post(
+            f"/transfers/{transfer_id}/decline",
+            json=body.model_dump(mode="json"),
+            request_timeout=DECLINE_FORWARD_TIMEOUT_S,
+            max_retries=0,
+        )
+    except httpx.HTTPError as exc:
+        raise AppError(
+            ErrorCode.DC_UNREACHABLE, "Không gọi được HQ", {"error": type(exc).__name__}
+        ) from exc
+    return passthrough(resp)

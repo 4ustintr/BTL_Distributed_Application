@@ -1,9 +1,10 @@
 """Connection asyncpg giả và hàm dựng Node API cho test Saga ở node-api (không cần CSDL).
 
-Dùng cho test_transfer_notice.py, test_transfer_cancel.py, test_transfer_sync_status.py.
+Dùng cho test_transfer_notice.py, test_transfer_cancel.py, test_transfer_sync_status.py,
+test_transfer_ship_receive.py, test_transfer_decline.py.
 
-reserve, release, write_outbox của services/stock.py (Tuấn Minh, chưa có) được thay bằng hàm giả
-theo chữ ký GIẢ ĐỊNH ghi ở đầu node-api/routers/transfers.py.
+reserve, release, consume, add_stock, write_outbox của services/stock.py được thay bằng hàm giả
+cùng chữ ký hàm thật; app.state.hq (client gọi HQ) được thay bằng FakeHq ghi lại lệnh gọi.
 """
 
 from __future__ import annotations
@@ -56,6 +57,44 @@ def released(product_id: int, qty: int) -> str:
     return f"stock.release:{product_id}:{qty}"
 
 
+def consumed(movement_type: str, product_id: int, qty: int) -> str:
+    return f"stock.consume:{movement_type}:{product_id}:{qty}"
+
+
+def added(movement_type: str, product_id: int, qty: int) -> str:
+    return f"stock.add_stock:{movement_type}:{product_id}:{qty}"
+
+
+HQ_CALL = "hq:"  # tiền tố trong log khi kho gọi HQ, ví dụ "hq:/transfers/<id>/shipped"
+
+
+class FakeHq:
+    """Thay app.state.hq. replies: hậu tố đường dẫn -> httpx.Response hoặc Exception để ném.
+
+    Không có trong replies thì trả 200 {"status": "OK"}. Mỗi lệnh gọi ghi vào log chung (sau
+    COMMIT mới được gọi) và vào calls (path, json, kwargs).
+    """
+
+    def __init__(self, replies: dict[str, Any] | None = None) -> None:
+        self.replies = replies or {}
+        self.calls: list[tuple[str, Any, dict[str, Any]]] = []
+        self.log: list[str] | None = None
+
+    async def post(self, path: str, *, json: Any = None, **kwargs: Any) -> httpx.Response:
+        self.calls.append((path, json, kwargs))
+        if self.log is not None:
+            self.log.append(f"{HQ_CALL}{path}")
+        for suffix, reply in self.replies.items():
+            if path.endswith(suffix):
+                if isinstance(reply, Exception):
+                    raise reply
+                return reply
+        return httpx.Response(200, json={"status": "OK"})
+
+    async def aclose(self) -> None:
+        return None
+
+
 class FakeTransaction:
     def __init__(self, log: list[str]) -> None:
         self.log = log
@@ -75,6 +114,7 @@ class FakeConn:
         self.log = log
         self.results = {norm(SQL_SET_APP_SOURCE): None, **results}
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
+        self.stock_calls: list[dict[str, Any]] = []  # tham số các lệnh consume, add_stock
 
     def transaction(self) -> FakeTransaction:
         return FakeTransaction(self.log)
@@ -179,9 +219,12 @@ def build_node(
     results: dict[str, Any] | None = None,
     reserve_error: AppError | None = None,
     release_error: AppError | None = None,
+    consume_error: AppError | None = None,
+    hq: FakeHq | None = None,
 ) -> Node:
     """Node API kho dc_id với CSDL giả trả `results` theo tiền tố SQL (đã chuẩn hóa)."""
     conn = FakeConn([], results or {})
+    dc_id_expected = dc_id  # các hàm giả có tham số keyword trùng tên dc_id
     events: list[tuple[EventType, dict[str, Any]]] = []
     monkeypatch.setenv(ENV_DC_ID, str(dc_id))
     monkeypatch.setenv(ENV_INTERNAL_KEY, KEY)
@@ -204,6 +247,51 @@ def build_node(
         if release_error is not None:
             raise release_error
         return {"version": 3, "qty_on_hand": 100, "qty_reserved": 0}
+
+    async def consume(
+        c: FakeConn,
+        *,
+        dc_id: int,
+        product_id: int,
+        qty: int,
+        request_id: Any,
+        created_by: str,
+        ref_type: Any = None,
+        lock_mode: Any = None,
+        movement_type: Any = None,
+        ref_id: str | None = None,
+    ) -> dict[str, Any]:
+        assert (c, dc_id) == (conn, dc_id_expected)
+        conn.log.append(consumed(str(movement_type), product_id, qty))
+        conn.stock_calls.append(
+            {"fn": "consume", "product_id": product_id, "qty": qty, "request_id": request_id,
+             "created_by": created_by, "ref_type": ref_type, "movement_type": movement_type,
+             "ref_id": ref_id}
+        )  # fmt: skip
+        if consume_error is not None:
+            raise consume_error
+        return {"version": 4, "qty_on_hand": 20, "qty_reserved": 0}
+
+    async def add_stock(
+        c: FakeConn,
+        *,
+        dc_id: int,
+        product_id: int,
+        qty: int,
+        request_id: Any,
+        created_by: str,
+        ref_type: Any = None,
+        movement_type: Any = None,
+        ref_id: str | None = None,
+    ) -> dict[str, Any]:
+        assert (c, dc_id) == (conn, dc_id_expected)
+        conn.log.append(added(str(movement_type), product_id, qty))
+        conn.stock_calls.append(
+            {"fn": "add_stock", "product_id": product_id, "qty": qty, "request_id": request_id,
+             "created_by": created_by, "ref_type": ref_type, "movement_type": movement_type,
+             "ref_id": ref_id}
+        )  # fmt: skip
+        return {"version": 2, "qty_on_hand": 60, "qty_reserved": 0}
 
     async def write_outbox(
         c: FakeConn,
@@ -235,9 +323,15 @@ def build_node(
     monkeypatch.setattr(main.asyncpg, "create_pool", fake_create_pool)
     monkeypatch.setattr(stock, "reserve", reserve, raising=False)
     monkeypatch.setattr(stock, "release", release, raising=False)
+    monkeypatch.setattr(stock, "consume", consume, raising=False)
+    monkeypatch.setattr(stock, "add_stock", add_stock, raising=False)
     monkeypatch.setattr(stock, "write_outbox", write_outbox, raising=False)
     client = stack.enter_context(TestClient(main.create_app()))
-    client.app.state.hq = NoHttp()
+    if hq is None:
+        client.app.state.hq = NoHttp()
+    else:
+        hq.log = conn.log
+        client.app.state.hq = hq
     return Node(client, conn, events)
 
 
