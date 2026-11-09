@@ -51,7 +51,11 @@ async def test_tc14_failover_replay() -> None:
         )
         assert r.status_code == 200, r.text
         inbound = FailoverResponse.model_validate(r.json())
-        assert (inbound.status, inbound.provisional_qty) == (PendingTxnStatus.PENDING, 70)
+        assert (inbound.status, inbound.provisional_qty, inbound.duplicate) == (
+            PendingTxnStatus.PENDING,
+            70,
+            False,
+        )
 
         r = await http.post(
             f"{t.hq}/failover/dc/{DC_TRUNG}/outbound",

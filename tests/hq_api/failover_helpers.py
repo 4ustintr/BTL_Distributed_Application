@@ -1,10 +1,8 @@
 """Tiện ích cho test tích hợp TC14, TC15, TC16 (Nhật Khánh; docs/tests.md mục 4).
 
-Địa chỉ theo spec F2, lấy HOST_A_IP, HOST_B_IP, POSTGRES_PASSWORD từ .env ở gốc repo.
-
-GIẢ ĐỊNH: lệnh make của máy B (kill-dc2, start-dc2) chạy bằng docker trên chính máy chạy pytest,
-tức HQ và kho đặt chung một máy, hoặc docker CLI đã trỏ sẵn sang máy B. Cách điều khiển máy B từ
-máy A khi chạy hai máy thật cần trưởng nhóm chốt (tests/conftest.py thuộc Minh Danh).
+Địa chỉ theo spec F2: HOST_A_IP, HOST_B_IP (tests/fixtures.host_ips), POSTGRES_PASSWORD từ .env.
+Test tích hợp chỉ chạy khi HQ và kho cùng một máy (HOST_A_IP = HOST_B_IP; tests/conftest.py tự
+skip), nên lệnh make kill-dc2, start-dc2, restart-connector-dc2 chạy ngay trên máy chạy pytest.
 """
 
 from __future__ import annotations
@@ -17,9 +15,9 @@ from typing import Any
 
 import asyncpg
 import httpx
-from fixtures import REPO_ROOT, SKU_A_PRODUCT_ID, load_demo_ids
+from fixtures import REPO_ROOT, SKU_A_PRODUCT_ID, host_ips, read_env_file
 
-from common.constants import ENV_HOST_A_IP, ENV_HOST_B_IP, DcStatus, PendingTxnStatus
+from common.constants import DcStatus, PendingTxnStatus
 
 HQ_PORT = 8000  # F2
 NODE_PORTS = {1: 8001, 2: 8002, 3: 8003}  # F2
@@ -37,12 +35,16 @@ class Target:
 
 
 def target() -> Target:
-    env = {**load_demo_ids(REPO_ROOT / ".env"), **os.environ}
-    host_a, host_b = env[ENV_HOST_A_IP], env[ENV_HOST_B_IP]
+    host_a, host_b = host_ips()
+    assert host_a and host_b, "thiếu HOST_A_IP, HOST_B_IP trong .env"
+    env_file = REPO_ROOT / os.environ.get("ENV_FILE", ".env")
+    password = (
+        os.environ.get(ENV_POSTGRES_PASSWORD) or read_env_file(env_file)[ENV_POSTGRES_PASSWORD]
+    )
     return Target(
         hq=f"http://{host_a}:{HQ_PORT}",
         nodes={dc: f"http://{host_b}:{port}" for dc, port in NODE_PORTS.items()},
-        hq_db=f"postgresql://hq_app:{env[ENV_POSTGRES_PASSWORD]}@{host_a}:{HQ_DB_PORT}/hq_db",
+        hq_db=f"postgresql://hq_app:{password}@{host_a}:{HQ_DB_PORT}/hq_db",
     )
 
 
