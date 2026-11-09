@@ -10,6 +10,6 @@ select = ["E", "F", "I", "B", "UP", "ASYNC"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
-  "integration: cần container thật hoặc 2 máy, không chạy trong CI",
+  "integration: cần container thật, HQ và kho cùng một máy (HOST_A_IP = HOST_B_IP); không chạy trong CI",
   "optional: test tùy chọn trong docs/tests.md",
 ]
