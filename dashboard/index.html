@@ -1,16 +1,52 @@
 <!doctype html>
-<!-- Trang tạm do infra dựng; Ngọc Chung thay bằng Dashboard thật. -->
 <html lang="vi">
 <head>
   <meta charset="utf-8">
-  <title>Dashboard HQ</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#132c29">
+  <title>HQ · Điều hành kho</title>
+  <link rel="stylesheet" href="style.css">
   <script src="config.js"></script>
+  <script type="module" src="js/dashboard.js"></script>
 </head>
 <body>
-  <h1>Dashboard HQ</h1>
-  <p>Trang tạm. Cấu hình: <code id="cfg"></code></p>
-  <script>
-    document.getElementById("cfg").textContent = JSON.stringify(window.CONFIG);
-  </script>
+  <header class="topbar">
+    <a href="./" class="brand"><span class="brand-icon" aria-hidden="true">H</span> HQ<span class="brand-divider">/</span><span>Điều hành kho</span></a>
+    <span class="connection" id="connection" role="status">Đang kết nối…</span>
+  </header>
+  <main>
+    <div class="page-heading">
+      <div><p class="eyebrow">MẠNG LƯỚI PHÂN PHỐI</p><h1>Toàn cảnh tồn kho</h1><p class="subtitle">Ba miền. Một góc nhìn xuyên suốt.</p></div>
+      <div class="heading-actions"><span id="last-refresh">Chưa có dữ liệu</span><button id="refresh" class="button secondary">Làm mới</button></div>
+    </div>
+    <div id="notice" class="notice" role="alert" hidden></div>
+    <section class="metrics" aria-label="Tổng hợp tồn kho">
+      <article><p>TỔNG TỒN HIỂN THỊ</p><strong id="total-stock">—</strong><span>thùng trên toàn mạng lưới</span></article>
+      <article><p>KHẢ DỤNG</p><strong id="total-available">—</strong><span>sau khi trừ hàng giữ chỗ</span></article>
+      <article><p>ĐANG ĐI ĐƯỜNG</p><strong id="total-transit">—</strong><span>đã xuất, chờ kho đích nhận</span></article>
+      <article><p>KHO TRỰC TUYẾN</p><strong id="online-count">—</strong><span id="status-caption">Đang xác nhận trạng thái</span></article>
+    </section>
+    <section aria-labelledby="inventory-heading">
+      <div class="section-heading"><div><h2 id="inventory-heading">Tồn kho từng miền</h2><p>SKU-A · Nước suối thùng 24 chai</p></div><div class="read-controls"><span class="mode-label" id="read-mode">Bản tổng hợp</span><button class="button" id="reconcile">Đối soát trực tiếp ↗</button></div></div>
+      <div class="warehouses" id="warehouses" aria-live="polite"><p class="empty">Đang tải tồn kho…</p></div>
+      <p class="source-help">Khi kho mất kết nối, bản tổng hợp vẫn giữ số gần nhất cùng thời điểm cập nhật. Số tạm tính bao gồm giao dịch đang chờ đồng bộ.</p>
+    </section>
+    <section class="panel invariant-panel" aria-labelledby="invariant-heading">
+      <div><h2 id="invariant-heading">Kiểm tra bảo toàn hàng</h2><p id="invariant-result" aria-live="polite">Kiểm tra sau khi các thao tác nhập, xuất và điều chuyển đã hoàn tất.</p><p id="invariant-details" class="muted"></p></div>
+      <button id="check-invariant" class="button secondary">Kiểm tra bất biến</button>
+    </section>
+    <section class="panel" aria-labelledby="transfers-heading">
+      <div class="section-heading"><div><h2 id="transfers-heading">Điều chuyển liên kho</h2><p>Theo dõi hành trình hàng hóa trong mạng lưới</p></div><button id="new-transfer" class="button secondary">+ Tạo phiếu</button></div>
+      <p class="section-message" id="transfer-message" role="status"></p>
+      <div class="table-wrap"><table><thead><tr><th>Mã phiếu</th><th>Hành trình</th><th>Số lượng SKU-A</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody id="transfer-rows"><tr><td colspan="5" class="empty">Đang tải danh sách phiếu…</td></tr></tbody></table></div>
+    </section>
+    <section class="panel" aria-labelledby="pending-heading">
+      <div class="section-heading"><div><h2 id="pending-heading">Giao dịch ghi hộ</h2><p>Giao dịch tiếp nhận tại HQ khi kho mất kết nối</p></div><label class="filter-label">Kho <select id="pending-dc"><option value="">Tất cả</option><option value="1">Bắc</option><option value="2">Trung</option><option value="3">Nam</option></select></label></div>
+      <p class="section-message" id="pending-message" role="status"></p>
+      <div class="table-wrap"><table><thead><tr><th>Mã giao dịch</th><th>Kho</th><th>Loại</th><th>Số lượng</th><th>Trạng thái</th><th>Chi tiết</th></tr></thead><tbody id="pending-rows"><tr><td colspan="6" class="empty">Đang tải giao dịch…</td></tr></tbody></table></div>
+    </section>
+    <footer>HQ / HỆ THỐNG QUẢN LÝ KHO PHÂN TÁN <span>Tự động làm mới mỗi 2 giây</span></footer>
+  </main>
+  <dialog id="transfer-dialog" aria-labelledby="dialog-title"><form id="transfer-form"><div class="section-heading"><h2 id="dialog-title">Tạo phiếu điều chuyển</h2><button type="button" id="close-dialog" class="icon-button" aria-label="Đóng">×</button></div><p class="muted">SKU-A · Nước suối thùng 24 chai</p><label>Kho nguồn<select id="from-dc" required><option value="1">Bắc</option><option value="2">Trung</option><option value="3">Nam</option></select></label><label>Kho đích<select id="to-dc" required><option value="3">Nam</option><option value="2">Trung</option><option value="1">Bắc</option></select></label><label>Số thùng<input id="transfer-qty" type="number" min="1" step="1" required value="50"></label><p id="form-error" role="alert" class="form-error"></p><button class="button" id="submit-transfer" type="submit">Tạo phiếu</button></form></dialog>
 </body>
 </html>
