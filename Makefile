@@ -12,7 +12,7 @@ ENV_FILE ?= .env
 # Script trong infra/scripts, scripts/ đọc ENV_FILE và CONNECT_URL từ môi trường.
 CONNECT_URL ?= http://localhost:8083
 export ENV_FILE CONNECT_URL
-COMPOSE_HQ = docker compose --env-file $(ENV_FILE) -f infra/compose.hq.yml -f consumer/compose.yml
+COMPOSE_HQ = docker compose --env-file $(ENV_FILE) -f infra/compose.hq.yml
 COMPOSE_DC = docker compose --env-file $(ENV_FILE) -f infra/compose.dc.yml
 # make logs S=hq-api  (để trống = mọi service); make logs N=200
 S ?=
@@ -103,8 +103,10 @@ restart-connector-dc2:
 	bash infra/scripts/restart-connector.sh dc2-outbox
 
 # Số đo M2, M4 (docs/tests.md mục 5), xem scripts/measure/README.md
+# Tham số thêm: make measure-failover ARGS="--only m2 --runs 5 --out ket-qua.json"
+ARGS ?=
 measure-failover:
-	@echo "TODO: $@ (goi python scripts/measure/m2_m4.py, xem scripts/measure/README.md)"
+	python scripts/measure/m2_m4.py $(ARGS)
 
 # ---- Tranh chấp đồng thời và bất biến (F12) ---------------------------------------------------
 # Máy B: 2 lệnh xuất 30 thùng cùng lúc vào kho Bắc (REQ_RACE_1, REQ_RACE_2).
@@ -119,5 +121,10 @@ race-unsafe:
 check-invariant:
 	@P=$(P) bash scripts/check-invariant.sh
 
-replay-again bench-cdc:
-	@echo "TODO: $@ (xem docs/spec.md mục F12)"
+# Máy A: gọi lại /replay kho Trung với REQ_KB3_IN, REQ_KB3_OUT; phải trả duplicate (KB3 bước 12).
+replay-again:
+	bash scripts/replay-again.sh
+
+# M1 (docs/tests.md mục 5), máy A: make bench-cdc ARGS="DC=2 COUNT=200 OUT=m1.json"
+bench-cdc:
+	env $(ARGS) bash scripts/measure/bench-cdc.sh

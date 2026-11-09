@@ -20,27 +20,35 @@ from consumer.processing import InventoryStore, handle_message
 
 log = logging.getLogger("hq-consumer")
 
-TEMPORARY_POLL_ERRORS = {
-    KafkaError.UNKNOWN_TOPIC_OR_PART,
-    KafkaError._UNKNOWN_TOPIC,
-    KafkaError._TRANSPORT,
-    KafkaError._ALL_BROKERS_DOWN,
-    KafkaError._TIMED_OUT,
-    KafkaError._WAIT_COORD,
-    KafkaError.LEADER_NOT_AVAILABLE,
-    KafkaError._PARTITION_EOF,
-}
+# Poll/metadata failures do not acknowledge data. Permanent authentication errors still fail.
+_TRANSIENT_POLL_ERRORS = frozenset(
+    {
+        KafkaError.UNKNOWN_TOPIC_OR_PART,
+        KafkaError._UNKNOWN_TOPIC,
+        KafkaError._PARTITION_EOF,
+        KafkaError._TRANSPORT,
+        KafkaError._ALL_BROKERS_DOWN,
+        KafkaError._TIMED_OUT,
+        KafkaError._WAIT_COORD,
+        KafkaError.LEADER_NOT_AVAILABLE,
+    }
+)
+
+
+def is_transient_poll_error(error: KafkaError) -> bool:
+    """Lỗi poll nên chờ rồi đọc tiếp, thay vì thoát tiến trình."""
+    return not error.fatal() and (error.retriable() or error.code() in _TRANSIENT_POLL_ERRORS)
 
 
 def handle_poll_error(error: KafkaError) -> None:
-    if not error.fatal() and (error.retriable() or error.code() in TEMPORARY_POLL_ERRORS):
+    if is_transient_poll_error(error):
         log.warning("Kafka not ready; polling will continue: %s", error)
         return
     raise KafkaException(error)
 
 
 async def poll_once(consumer: Consumer, producer: Producer, store: InventoryStore) -> bool:
-    """A missing topic during make reset is not a process failure or an acknowledgement."""
+    """Keep startup/reconnect errors separate from errors processing an actual record."""
     try:
         message = await asyncio.to_thread(consumer.poll, 0.5)
     except KafkaException as error:
@@ -51,7 +59,6 @@ async def poll_once(consumer: Consumer, producer: Producer, store: InventoryStor
     if message.error():
         handle_poll_error(message.error())
         return False
-    # Data/DB/commit failures still propagate: no later offset can skip this record.
     await handle_message(message, store, consumer, producer)
     return True
 

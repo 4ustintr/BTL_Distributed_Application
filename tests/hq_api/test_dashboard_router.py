@@ -1,4 +1,4 @@
-"""TC12/TC13 and F7 read endpoints, without requiring the other owners' workers."""
+"""Router đọc của HQ (F7): /dashboard/inventory, /invariant – lỗi F5, SKU lạ; không cần CSDL."""
 
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, Mock
@@ -52,7 +52,7 @@ async def test_unknown_product_is_not_zero_stock(read_app):
         ("realtime", 35, "offline"),
     ],
 )
-async def test_offline_realtime_never_queries_fdw_even_with_pending(
+async def test_offline_realtime_never_queries_fdw_with_pending(
     read_app,
     monkeypatch,
     mode,

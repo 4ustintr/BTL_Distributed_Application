@@ -1,7 +1,12 @@
-"""M1: send controlled Node API writes, then summarize per-event Consumer logs.
+"""M1 – độ trễ CDC (docs/tests.md mục 5) – Ngọc Chung. Chạy qua make bench-cdc (máy A).
 
-Does not poll inventory_snapshot: later events overwrite that row and lose samples.
-The two machine clocks must be synchronized (docs/tests.md 5).
+  send:   gửi COUNT lệnh POST /outbound 1 thùng, cách nhau INTERVAL giây, vào một kho; lưu
+          request_id từng lệnh vào file JSON (lưu trước khi gửi, để lệnh hết giờ vẫn có mã).
+  report: đọc log của hq-consumer (mỗi sự kiện một dòng JSON có latency_ms = synced_at −
+          occurred_at), lấy đúng các request_id đã gửi, tính p50, p95, max (ms).
+
+Không đọc inventory_snapshot: sự kiện sau ghi đè dòng đó nên mất mẫu. occurred_at theo đồng hồ
+kho, synced_at theo đồng hồ HQ: hai máy phải đồng bộ NTP, hoặc đo khi kho và HQ cùng một máy.
 """
 
 from __future__ import annotations
@@ -10,13 +15,18 @@ import argparse
 import asyncio
 import json
 import math
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-import httpx
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-from common.constants import RefType
-from common.ids import new_request_id
+import httpx  # noqa: E402
+
+from common.constants import RefType  # noqa: E402
+from common.ids import new_request_id  # noqa: E402
 
 
 def summarize(request_ids: list[str], lines: list[str]) -> dict[str, float | int]:
@@ -109,6 +119,12 @@ async def send(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    for stream in (
+        sys.stdout,
+        sys.stderr,
+    ):  # terminal Windows mặc định cp1252, không in được tiếng Việt
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     sender = commands.add_parser("send")

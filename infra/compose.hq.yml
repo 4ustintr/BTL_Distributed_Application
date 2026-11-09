@@ -121,8 +121,24 @@ services:
       - "8000:8000"
     restart: unless-stopped
 
-  # TODO(hq-consumer): thêm service hq-consumer (F2: không mở cổng; HQ_DB_URL, NODE_URLS,
-  # KAFKA_BOOTSTRAP=kafka:9092) khi consumer/ có code và Dockerfile.
+  # CDC Consumer (F2: không mở cổng; db.md 3.4). Đọc outbox.event.INVENTORY, ghi inventory_snapshot.
+  # Chết giữa chừng thì restart và đọc lại từ offset đã commit (offset chỉ commit sau khi CSDL commit).
+  hq-consumer:
+    build:
+      context: ..
+      dockerfile: consumer/Dockerfile
+    image: btl/hq-consumer
+    container_name: hq-consumer
+    depends_on:
+      pg-hq:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      HQ_DB_URL: postgresql://hq_app:${POSTGRES_PASSWORD}@pg-hq:5432/hq_db
+      NODE_URLS: '{"1": "http://${HOST_B_IP}:8001", "2": "http://${HOST_B_IP}:8002", "3": "http://${HOST_B_IP}:8003"}'
+      KAFKA_BOOTSTRAP: kafka:9092
+    restart: unless-stopped
 
   dashboard:
     image: nginx:1.27-alpine

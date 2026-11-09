@@ -1,83 +1,48 @@
-# CDC và đọc phân tán — Ngọc Chung
+# Phần Ngọc Chung: CDC và đọc phân tán
 
-Hợp đồng: F5, F7, F8; db.md 2.4/3.4; TC10–TC13 và M1.
+Nguồn hợp đồng: spec F5, F7, F8; `docs/db.md` mục 2.4 và 3.4; `docs/demo.md` Kịch bản 2;
+TC10–TC13 và M1 trong `docs/tests.md`.
 
-## Chạy cùng hệ thống nhóm
+## Code
 
-Dùng Git Bash, Python 3.11 và Docker Desktop theo README ở gốc. Đặt `.env` theo
-`infra/README.md`. Makefile ghép `consumer/compose.yml` vào compose HQ nên các lệnh
-`make up-hq`, `make reset`, `make down-hq` quản lý cả hq-consumer.
+- `processing.py`: kiểm payload và key Kafka, chặn trùng bằng `processed_event`, upsert
+  `inventory_snapshot` chỉ khi version mới hơn, chuyển `pending_txn` sang APPLIED (kèm
+  `applied_at`, `updated_at`) trong cùng transaction, rồi mới commit offset Kafka (db.md 3.4).
+  Sự kiện sai định dạng được gửi DLQ và chờ broker xác nhận trước khi commit offset.
+  Lỗi CSDL hoặc broker làm tiến trình thoát; Docker khởi động lại và đọc lại từ offset đã commit.
+- `main.py`: group `hq-consumer`, chỉ đọc `outbox.event.INVENTORY`, tắt auto commit và auto
+  offset store; đóng kết nối khi nhận SIGTERM. Consumer không ghi `transfer_summary`.
+  Mỗi snapshot được cập nhật ghi một dòng log JSON có `latency_ms` (dùng cho M1).
+- `hq-api/routers/dashboard.py`: `/dashboard/inventory` (snapshot, realtime FDW từng kho
+  riêng, offline, tạm tính), `/dc-status`, `/pending-txn`.
+- `hq-api/routers/invariant.py`: `/invariant` đọc đủ ba kho, trả 503 khi thiếu kho.
+- `dashboard/`: HTML/CSS/JS thuần; cập nhật mỗi 2 giây, đối soát, kiểm tra bất biến,
+  tạo và hủy phiếu (TIMEOUT), xem giao dịch ghi hộ.
 
-```bash
-make reset
-make lint
-make test-ci
-make test-js
-```
+## Chạy
 
-Consumer chỉ subscribe `outbox.event.INVENTORY`, group `hq-consumer`, tắt auto commit
-và auto offset store. Topic chưa có hoặc lỗi poll tạm thời chỉ được ghi log rồi tiếp tục
-poll. Lỗi quyền truy cập/fatal, lỗi ghi CSDL và lỗi commit vẫn được báo ra.
-Snapshot, processed_event và APPLIED cùng transaction; commit offset sau commit CSDL.
+Consumer là service `hq-consumer` trong `infra/compose.hq.yml`, dựng cùng `make up-hq` và
+`make reset`. Xem log: `make logs S=hq-consumer`.
 
-## TC bắt buộc trên stack chung
+## Kiểm thử
 
-```bash
-pytest tests/consumer/test_tc10_redelivery.py -q -s
-pytest tests/hq_api/test_tc12_offline.py -q -s
-```
+| Test | File | Loại |
+| :---- | :---- | :---- |
+| Consumer: commit offset sau CSDL, DLQ, key sai | `tests/consumer/test_consumer_processing.py` | unit (CI) |
+| Router đọc: lỗi F5, SKU lạ | `tests/hq_api/test_dashboard_router.py` | unit (CI) |
+| Script M1 | `tests/consumer/test_measure_m1.py` | unit (CI) |
+| TC10 – đọc lại toàn bộ topic, snapshot và processed_event không đổi | `tests/consumer/test_tc10_consumer_replay.py` | tích hợp |
+| TC11 – sự kiện version cũ không ghi đè (tùy chọn) | `tests/consumer/test_tc11_out_of_order.py` | tích hợp |
+| TC12 – kho chết, realtime dưới 1 giây | `tests/hq_api/test_tc12_fdw_dead_dc.py` | tích hợp |
+| TC13 – kho treo, realtime 3–5 giây (tùy chọn) | `tests/hq_api/test_tc13_fdw_hung_dc.py` | tích hợp |
 
-Hai TC đều gọi `make reset` và dùng cấu hình từ `tests/fixtures.py`/`.env`.
-TC10 chèn outbox ở pg-dc1, đợi CDC, dừng hq-consumer, reset offset Kafka về earliest,
-khởi động lại rồi so nguyên snapshot và số dòng processed_event.
-TC12 kill pg-dc2/node-api-dc2, đợi Health Monitor đánh dấu OFFLINE, rồi đo realtime
-phải dưới 1 giây, Bắc/Nam realtime và Trung offline. Kho và connector được bật lại
-trong finally.
-
-Không có điều kiện skip theo hostname riêng. Thiếu service/configuration hoặc reset lỗi
-thì TC thất bại. Chỉ quy tắc toàn nhóm trong tests/conftest.py được dùng để skip tích hợp
-khi HOST_A_IP khác HOST_B_IP. Chạy từng TC, không chạy song song vì make reset xóa dữ liệu.
-
-## TC tùy chọn
-
-```bash
-pytest tests/consumer/test_tc11_old_version.py -q -s
-pytest tests/hq_api/test_tc13_timeout.py -q -s
-```
-
-TC11 phát version mới rồi version cũ qua Kafka; snapshot không bị ghi đè.
-TC13 pause kho thật, yêu cầu phản hồi khoảng 3–5 giây, giữ số hai kho còn lại,
-rồi unpause trong finally. Có dung sai 0.5 giây cho hủy truy vấn sau deadline F11.
-Test bổ sung cho startup, transaction, parser và API dùng tên thành phần, không mượn ID TC.
-
-`tests/consumer/stack_helpers.py` chỉ điều khiển stack trong `infra/`, không tạo schema,
-role, connector hoặc một cụm Docker riêng. `tests/consumer/Dockerfile` chỉ là image công cụ
-Python/Node/make/Docker CLI nếu máy chưa có tool; không chứa stack CSDL/Kafka.
-
-## Dashboard và số liệu
-
-HTML/CSS/JS thuần, config.js do nginx sinh, polling snapshot mỗi 2 giây. GET không
-có Content-Type nên tránh preflight CORS không cần thiết; JSON POST có header này.
-Bấm Đối soát: mỗi kho một truy vấn FDW riêng có timeout. Kho đã OFFLINE trả snapshot
-với source=offline ngay, kể cả có pending; snapshot mode vẫn có số provisional cho
-OFFLINE/RECOVERING có giao dịch PENDING. Kết quả đối soát được giữ 15 giây.
-
-Dashboard còn gọi API phiếu của Minh Hiếu; phần tạo/hủy phiếu cần API Saga đã ghép.
-API/worker của người khác không được mô phỏng trong production.
+Test tích hợp chạy trên hệ thống thật khi HQ và kho cùng một máy (`HOST_A_IP = HOST_B_IP`),
+mỗi test tự gọi `make reset`: `make test` (bắt buộc) hoặc `make test-all` (cả tùy chọn).
 
 ## M1
 
-Consumer ghi một dòng JSON cho mỗi snapshot thực sự cập nhật, gồm request_id,
-occurred_at, synced_at và latency_ms. Sắp sự kiện bằng version, không dùng timestamp.
-
-```bash
-python -m consumer.benchmark send --node-url http://HOST_B_IP:8002 --prepare-stock --output requests.json
-docker logs hq-consumer > consumer.log 2>&1
-python -m consumer.benchmark report --requests requests.json --log consumer.log --output cdc-results.json
-```
-
-Mặc định 200 lệnh xuất, cách nhau 100 ms. --prepare-stock nhập thêm 200 thùng qua API.
-Report kiểm tra đủ mẫu và độ trễ âm; đồng bộ đồng hồ hai máy trước khi đo.
-PowerShell 5 xuất log UTF-8 bằng `docker logs hq-consumer 2>&1 | Out-File consumer.log -Encoding utf8`.
-`validation/M1-local.json` là kết quả lịch sử ngày 08/11 dùng SQL emitter; không coi đó
-là phép đo mới trên stack demo. Kết quả kiểm chứng review ở VALIDATION.md.
+`make bench-cdc` (máy A): gửi 200 lệnh xuất 1 thùng cách nhau 100 ms vào kho Trung (nhập trước
+200 thùng), đọc log `hq-consumer`, in p50, p95, max (ms). Đổi tham số:
+`make bench-cdc ARGS="DC=1 COUNT=200 OUT=m1.json"`. Script: `scripts/measure/m1_cdc.py`.
+`latency_ms = synced_at − occurred_at` dùng đồng hồ của kho và HQ: đồng bộ NTP hai máy, hoặc đo
+khi kho và HQ cùng một máy, và ghi rõ trong báo cáo. Report thiếu mẫu hoặc độ trễ âm sẽ báo lỗi.
