@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Response
 from services import stock
 
 from common.constants import (
@@ -190,6 +190,14 @@ async def notice(body: TransferNoticeRequest, request: Request) -> TransferStatu
         except DuplicateNotice:
             status = await conn.fetchval(SQL_ORDER_STATUS, body.transfer_code)
             return TransferStatusResponse(status=status, duplicate=True)
+        except asyncpg.ForeignKeyViolationError as exc:
+            # F5: lệnh ghi có SKU trong body không có trong danh mục (product nhân bản từ HQ)
+            # -> 400; transaction đã ROLLBACK khi lỗi thoát khỏi khối.
+            raise AppError(
+                ErrorCode.VALIDATION_ERROR,
+                "SKU hoặc kho trong phiếu không có trong danh mục",
+                {"detail": getattr(exc, "detail", None)},
+            ) from exc
         return TransferStatusResponse(status=TransferStatus.CREATED)
 
 
@@ -252,9 +260,15 @@ async def cancel(
     return TransferStatusResponse(status=TransferStatus.CANCELLED)
 
 
-@router.post("/transfers/{transfer_id}/sync-status")
-async def sync_status(transfer_id: UUID, body: SyncStatusRequest, request: Request) -> None:
-    """F6: HQ đồng bộ trạng thái phiếu xuống kho; không tiến được thì bỏ qua, vẫn trả 200."""
+@router.post("/transfers/{transfer_id}/sync-status", response_class=Response)
+async def sync_status(transfer_id: UUID, body: SyncStatusRequest, request: Request) -> Response:
+    """F6: HQ đồng bộ trạng thái phiếu xuống kho; 200 không có thân, kể cả khi bỏ qua."""
+    await apply_sync_status(transfer_id, body, request)
+    return Response(status_code=200)
+
+
+async def apply_sync_status(transfer_id: UUID, body: SyncStatusRequest, request: Request) -> None:
+    """Đổi bản phiếu ở kho này nếu đang ở trạng thái liền trước; không tiến được thì bỏ qua."""
     direction = SYNC_DIRECTION.get(body.status)
     if direction is None:  # CREATED: không có trạng thái liền trước để đồng bộ
         return
