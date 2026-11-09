@@ -197,14 +197,21 @@ def _insufficient(dc_id: int, product_id: int, qty: int, row: asyncpg.Record | N
     )
 
 
-def _nothing_to_release(
+def _reserved_too_small(
     dc_id: int, product_id: int, qty: int, row: asyncpg.Record | None
 ) -> AppError:
+    """Giữ chỗ không đủ cho thao tác: 422 INSUFFICIENT_STOCK (F10.c bước 2).
+
+    Không dùng 409 INVALID_STATE: F10.c, F10.g dành mã đó cho phiếu đã CANCELLED/đã xuất hàng.
+    """
     reserved = 0 if row is None else row["qty_reserved"]
+    log.warning(
+        "INSUFFICIENT_STOCK kho %s SKU %s: cần %s, đang giữ %s", dc_id, product_id, qty, reserved
+    )
     return AppError(
-        ErrorCode.INVALID_STATE,
-        "Số lượng giữ chỗ nhỏ hơn số cần nhả",
-        {"dc_id": dc_id, "product_id": product_id, "requested": qty, "reserved": reserved},
+        ErrorCode.INSUFFICIENT_STOCK,
+        "Số lượng giữ chỗ không đủ",
+        {"product_id": product_id, "requested": qty, "reserved": reserved},
     )
 
 
@@ -287,9 +294,9 @@ async def release(
 ) -> asyncpg.Record:
     """F10.e bước 2: nhả qty thùng giữ chỗ. Trả dòng RETURNING như reserve.
 
-    Nhả quá số đang giữ hoặc chưa có dòng tồn: INVALID_STATE (409).
+    Nhả quá số đang giữ hoặc chưa có dòng tồn: INSUFFICIENT_STOCK (422).
     """
-    return await _update_optimistic(conn, _SQL_RELEASE, dc_id, product_id, qty, _nothing_to_release)
+    return await _update_optimistic(conn, _SQL_RELEASE, dc_id, product_id, qty, _reserved_too_small)
 
 
 async def write_outbox(

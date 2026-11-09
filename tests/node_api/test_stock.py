@@ -351,19 +351,20 @@ async def test_release_update_lowers_reserved_conditionally() -> None:
     assert conn.kinds() == ["select_inventory", "update_inventory"]
 
 
-async def test_release_more_than_reserved_is_invalid_state() -> None:
-    # H1: không nhả được quá số đang giữ -> 409 INVALID_STATE, không để CHECK của DB báo lỗi 500
+async def test_release_more_than_reserved_is_insufficient_stock() -> None:
+    # Không nhả được quá số đang giữ -> 422 INSUFFICIENT_STOCK, không để CHECK của DB báo lỗi 500.
+    # Không dùng 409 INVALID_STATE: F10.g dành mã đó cho "phiếu đã xuất hàng".
     conn = FakeConn({"select_inventory": [inv_row(3, 100, 5)], "update_inventory": [None]})
     with pytest.raises(AppError) as exc:
         await stock.release(conn, DC_ID, PRODUCT_ID, 10)
-    assert exc.value.error_code == ErrorCode.INVALID_STATE and exc.value.status_code == 409
+    assert exc.value.error_code == ErrorCode.INSUFFICIENT_STOCK and exc.value.status_code == 422
 
 
-async def test_release_without_inventory_row_is_invalid_state() -> None:
-    conn = FakeConn({"select_inventory": [None]})  # H2
+async def test_release_without_inventory_row_is_insufficient_stock() -> None:
+    conn = FakeConn({"select_inventory": [None]})
     with pytest.raises(AppError) as exc:
         await stock.release(conn, DC_ID, PRODUCT_ID, 10)
-    assert exc.value.error_code == ErrorCode.INVALID_STATE
+    assert exc.value.error_code == ErrorCode.INSUFFICIENT_STOCK
     assert "update_inventory" not in conn.kinds()
 
 
