@@ -1,7 +1,6 @@
 """Connection asyncpg giả và hàm dựng Node API cho test Saga ở node-api (không cần CSDL).
 
-Dùng cho test_tc05_sync_status.py và test_tc07_cancel.py. test_tc08_notice_duplicate.py còn bản
-fake riêng; gộp về file này sau khi PR notice đã merge.
+Dùng cho test_transfer_notice.py, test_transfer_cancel.py, test_transfer_sync_status.py.
 
 reserve, release, write_outbox của services/stock.py (Tuấn Minh, chưa có) được thay bằng hàm giả
 theo chữ ký GIẢ ĐỊNH ghi ở đầu node-api/routers/transfers.py.
@@ -47,6 +46,10 @@ def norm(sql: str) -> str:
 
 def outbox(event_type: EventType) -> str:
     return f"outbox:{event_type}"
+
+
+def reserved(product_id: int, qty: int) -> str:
+    return f"stock.reserve:{product_id}:{qty}"
 
 
 def released(product_id: int, qty: int) -> str:
@@ -174,6 +177,7 @@ def build_node(
     dc_id: int,
     *,
     results: dict[str, Any] | None = None,
+    reserve_error: AppError | None = None,
     release_error: AppError | None = None,
 ) -> Node:
     """Node API kho dc_id với CSDL giả trả `results` theo tiền tố SQL (đã chuẩn hóa)."""
@@ -186,6 +190,13 @@ def build_node(
 
     async def fake_create_pool(*_a: Any, **_k: Any) -> FakePool:
         return FakePool(conn)
+
+    async def reserve(c: FakeConn, dc: int, product_id: int, qty: int) -> dict[str, int]:
+        assert (c, dc) == (conn, dc_id)
+        conn.log.append(reserved(product_id, qty))
+        if reserve_error is not None:
+            raise reserve_error
+        return {"version": 2, "qty_on_hand": 100, "qty_reserved": qty}
 
     async def release(c: FakeConn, dc: int, product_id: int, qty: int) -> dict[str, int]:
         assert (c, dc) == (conn, dc_id)
@@ -222,6 +233,7 @@ def build_node(
         events.append((event_type, payload))
 
     monkeypatch.setattr(main.asyncpg, "create_pool", fake_create_pool)
+    monkeypatch.setattr(stock, "reserve", reserve, raising=False)
     monkeypatch.setattr(stock, "release", release, raising=False)
     monkeypatch.setattr(stock, "write_outbox", write_outbox, raising=False)
     client = stack.enter_context(TestClient(main.create_app()))
