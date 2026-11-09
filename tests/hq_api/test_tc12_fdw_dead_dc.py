@@ -1,4 +1,11 @@
-"""TC12: wait for HQ to mark dc2 OFFLINE, then the realtime read must take < 1 second."""
+"""TC12 – FDW khi kho chết (docs/tests.md mục 4).
+
+Cách chạy: make kill-dc2, chờ HQ đánh dấu kho Trung OFFLINE, gọi GET
+/dashboard/inventory?mode=realtime.
+Assert: phản hồi dưới 1 giây; Bắc, Nam source=realtime; Trung source=offline (số snapshot 40).
+Sau test bật lại kho Trung và connector dc2-outbox.
+Spec: F3, F7; db.md 2.4 (3 truy vấn FDW riêng, lỗi từng kho không làm mất số kho khác); KB2 bước 5.
+"""
 
 from __future__ import annotations
 

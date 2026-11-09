@@ -50,8 +50,8 @@ khi kho và HQ cùng một máy, và ghi rõ trong báo cáo. Report thiếu m�
 
 ## Bổ sung sau review PR #6
 
-- Realtime không gọi FDW khi kho đã OFFLINE, kể cả đang có pending. Snapshot mode vẫn
-  tính provisional cho OFFLINE/RECOVERING có giao dịch PENDING.
+- Realtime không gọi FDW khi kho đã OFFLINE, kể cả đang có pending. Kho OFFLINE/RECOVERING
+  có giao dịch PENDING hiện tạm tính ở cả snapshot lẫn realtime (db.md 2.4, KB3 bước 6: 55).
 - TC12 đợi snapshot seed và trạng thái OFFLINE trước khi đo; sau test bật lại kho/connector.
 - GET của Dashboard không gửi Content-Type; chỉ JSON POST mới thêm header này.
 - Hồi quy poll error và transaction: `tests/consumer/test_main.py`, `test_projection.py`.

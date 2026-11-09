@@ -9,8 +9,9 @@ APPLIED cập nhật updated_at. Không đưa lại compose/schema/role/connecto
 1. Poll lỗi topic chưa tồn tại, lỗi kết nối và broker tạm thời: log rồi tiếp tục,
    không commit offset và không gửi DLQ cho lỗi poll. Xử lý cả KafkaException từ poll.
    Lỗi fatal/quyền truy cập và lỗi ghi CSDL/commit vẫn lan ra để tránh bỏ qua dữ liệu.
-2. Realtime OFFLINE luôn trả snapshot/source=offline ngay, kể cả đang có pending;
-   snapshot mode vẫn có provisional. Có test chứng minh không gọi FDW ở trường hợp này.
+2. Realtime không gọi FDW cho kho OFFLINE. Kho OFFLINE/RECOVERING còn pending hiện tạm tính ở
+   mọi chế độ (db.md 2.4; Minh Danh chỉnh khi merge), không pending thì snapshot/offline. Có test
+   chứng minh không gọi FDW ở cả hai trường hợp.
 3. Dashboard chỉ đặt Content-Type khi có body; test-js kiểm tra GET và POST.
 4. TC10 so cả synced_at sau reset offset. TC12 chờ snapshot seed và OFFLINE trước khi
    đo dưới 1 giây; finally phục hồi cả kho lẫn connector.

@@ -95,11 +95,10 @@ async def inventory(
     items: list[DashboardInventoryItem] = []
     candidates: list[int] = []
     for row in rows:
-        offline_realtime = mode == DashboardMode.REALTIME and row["status"] == DcStatus.OFFLINE
-        provisional = (
-            not offline_realtime
-            and row["status"] in (DcStatus.OFFLINE, DcStatus.RECOVERING)
-            and bool(row["pending_count"])
+        # db.md 2.4: OFFLINE/RECOVERING còn pending -> tạm tính ở mọi chế độ (KB3 bước 6: 55).
+        # Dòng tạm tính và dòng OFFLINE không vào danh sách đọc FDW bên dưới.
+        provisional = row["status"] in (DcStatus.OFFLINE, DcStatus.RECOVERING) and bool(
+            row["pending_count"]
         )
         source = InventorySource.SNAPSHOT
         if row["status"] == DcStatus.OFFLINE:
