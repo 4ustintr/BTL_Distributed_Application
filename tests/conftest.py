@@ -15,7 +15,7 @@ for _p in (str(REPO_ROOT), str(TESTS_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from fixtures import DEMO_IDS, print_status_line  # noqa: E402
+from fixtures import DEMO_IDS, host_ips, integration_skip_reason, print_status_line  # noqa: E402
 
 # Cho script và test con đọc bằng os.environ; không ghi đè giá trị đã đặt sẵn
 for _key, _value in DEMO_IDS.items():
@@ -32,3 +32,13 @@ def demo_ids() -> dict[str, str]:
 def status_line():  # type: ignore[no-untyped-def]
     """Hàm in dòng trạng thái theo docs/tests.md mục 3."""
     return print_status_line
+
+
+@pytest.fixture(autouse=True)
+def _integration_same_host(request: pytest.FixtureRequest) -> None:
+    """Test @pytest.mark.integration chỉ chạy khi HOST_A_IP = HOST_B_IP (docs/tests.md mục 4)."""
+    if request.node.get_closest_marker("integration") is None:
+        return
+    reason = integration_skip_reason(*host_ips())
+    if reason is not None:
+        pytest.skip(reason)

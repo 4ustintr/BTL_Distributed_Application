@@ -22,11 +22,11 @@ kho sập thì WMS ghi hộ qua HQ (pending_txn) rồi Replay Worker đẩy lạ
 ## Bản đồ repo và chủ sở hữu
 | Thư mục / file | Chủ | Mục spec chính |
 |---|---|---|
-| infra/, db/, common/, scripts/, docs/, tests/conftest.py, */main.py | Minh Danh | F1–F5, F11, F12, db.md |
+| infra/, db/, common/, scripts/ (trừ script đo trong scripts/measure/), docs/, tests/conftest.py, hq-api/main.py, node-api/main.py | Minh Danh | F1–F5, F11, F12, db.md |
 | node-api/routers/inventory.py, node-api/services/, node-api/recovery.py, wms/ (giao diện) | Tuấn Minh | F6, F10.a |
 | hq-api/routers/transfers.py, node-api/routers/transfers.py | Minh Hiếu | F6, F7, F10.b–g |
-| consumer/, hq-api/routers/dashboard.py, hq-api/routers/invariant.py, dashboard/ | Ngọc Chung | F7, F8, db.md 2.4, 3.4 |
-| hq-api/workers/, hq-api/routers/failover.py, wms/js/client.js | Nhật Khánh | F7, F9, F10.h–j |
+| consumer/ (kể cả consumer/main.py), hq-api/routers/dashboard.py, hq-api/routers/invariant.py, dashboard/, script đo M1 trong scripts/measure/ | Ngọc Chung | F7, F8, db.md 2.4, 3.4; tests.md mục 5 (M1) |
+| hq-api/workers/, hq-api/routers/failover.py, wms/js/client.js, scripts/measure/m2_m4.py | Nhật Khánh | F7, F9, F10.h–j; tests.md mục 5 (M2, M4) |
 
 ## Phạm vi sửa
 - Chỉ sửa file trong phạm vi ghi ở prompt. Cần sửa chỗ khác thì dừng và ghi đề xuất.
@@ -49,8 +49,11 @@ kho sập thì WMS ghi hộ qua HQ (pending_txn) rồi Replay Worker đẩy lạ
 
 ## Cách làm
 - Quy trình 4 bước, dùng lệnh dự án: `/plan-task` → `/test-first` → `/implement` → `/self-review`.
-- Test đặt trong `tests/<service>/`, tên `test_tcXX_<ten_ngan>.py` theo ID ở `docs/tests.md`.
-  Test cần 2 máy hoặc container thật: `@pytest.mark.integration`. Test tùy chọn: `@pytest.mark.optional`.
+- Test đặt trong `tests/<service>/`. Tiền tố `test_tcXX_` chỉ dành cho test hiện thực đúng một TC
+  trong `docs/tests.md` (`test_tcXX_<ten_ngan>.py`); unit test đặt tên theo thành phần
+  (`test_health_monitor.py`…).
+  Test cần container thật: `@pytest.mark.integration` (chỉ chạy khi HQ và kho cùng một máy,
+  HOST_A_IP = HOST_B_IP; khác thì bị skip). Test tùy chọn: `@pytest.mark.optional`.
 - Dùng mã cố định trong `scripts/demo_ids.env` cho dữ liệu test và demo.
 - Dùng hằng số, model, lỗi và HTTP client trong `common/`; không viết chuỗi trực tiếp như "PENDING".
 - Lỗi trả theo dạng `{error_code, message, details}` của spec F5.
