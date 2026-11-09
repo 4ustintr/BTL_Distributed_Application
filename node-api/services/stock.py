@@ -39,6 +39,10 @@ class StockResult:
     version: int
     duplicate: bool = False
 
+    def __getitem__(self, key: str) -> Any:
+        """Đọc kiểu row["qty_on_hand"], như dòng RETURNING mà reserve và release trả về."""
+        return getattr(self, key)
+
 
 class DuplicateRequest(Exception):
     """F10.a bước 3: stock_movement đã có request_id này; router ROLLBACK và trả duplicate."""
@@ -112,12 +116,13 @@ async def _insert_movement(
     qty_change: int,
     ref_type: RefType,
     created_by: str,
+    ref_id: str | None = None,
 ) -> None:
     """F10.a bước 3. Không ghi được dòng nào là trùng request_id (chốt chặn cuối)."""
     row = await conn.fetchrow(
         "INSERT INTO stock_movement "
-        "(request_id, dc_id, product_id, movement_type, qty_change, ref_type, created_by) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7) "
+        "(request_id, dc_id, product_id, movement_type, qty_change, ref_type, ref_id, created_by) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
         "ON CONFLICT (request_id) DO NOTHING RETURNING movement_id",
         request_id,
         dc_id,
@@ -125,6 +130,7 @@ async def _insert_movement(
         movement_type,
         qty_change,
         ref_type,
+        ref_id,
         created_by,
     )
     if row is None:
@@ -178,6 +184,13 @@ _SQL_RESERVE = (
     "AND qty_on_hand - qty_reserved >= $1 "
     "RETURNING qty_on_hand, qty_reserved, version"
 )
+_SQL_TRANSFER_OUT = (
+    "UPDATE inventory SET qty_on_hand = qty_on_hand - $1, qty_reserved = qty_reserved - $1, "
+    "updated_at = now() "
+    "WHERE dc_id = $2 AND product_id = $3 AND version = $4 "
+    "AND qty_reserved >= $1 "
+    "RETURNING qty_on_hand, qty_reserved, version"
+)
 _SQL_RELEASE = (
     "UPDATE inventory SET qty_reserved = qty_reserved - $1, updated_at = now() "
     "WHERE dc_id = $2 AND product_id = $3 AND version = $4 "
@@ -204,7 +217,7 @@ def _nothing_to_release(
     reserved = 0 if row is None else row["qty_reserved"]
     return AppError(
         ErrorCode.INVALID_STATE,
-        "Số lượng giữ chỗ nhỏ hơn số cần nhả",
+        "Số lượng giữ chỗ nhỏ hơn số cần nhả hoặc xuất điều chuyển",
         {"dc_id": dc_id, "product_id": product_id, "requested": qty, "reserved": reserved},
     )
 
@@ -278,23 +291,44 @@ async def consume(
     qty: int,
     request_id: UUID,
     created_by: str,
-    ref_type: RefType,
+    ref_type: RefType | None = None,
     lock_mode: LockMode = LockMode.OPTIMISTIC,
+    movement_type: MovementType = MovementType.OUTBOUND,
+    ref_id: str | None = None,
 ) -> StockResult:
-    """F10.a bước 2 (xuất) và bước 3, khóa lạc quan theo version (db.md 2.7)."""
-    if lock_mode == LockMode.NONE:
-        row = await _overwrite_unsafe(conn, dc_id, product_id, qty)
+    """Xuất kho, khóa lạc quan theo version (db.md 2.7), rồi ghi sổ (F10.a bước 2, 3).
+
+    movement_type OUTBOUND (mặc định): trừ qty_on_hand, điều kiện khả dụng; ref_type mặc định ISSUE;
+    lock_mode NONE chỉ áp dụng cho nhánh này (make race-unsafe).
+    movement_type TRANSFER_OUT (F10.c bước 2): trừ cả qty_on_hand và qty_reserved cùng qty, điều
+    kiện qty_reserved >= qty; ref_type mặc định TRANSFER; giữ chỗ không đủ thì INVALID_STATE.
+    ref_id là mã chứng từ ghi vào sổ (db.md 2.8), ví dụ transfer_id.
+    """
+    if movement_type == MovementType.TRANSFER_OUT:
+        row = await _update_optimistic(
+            conn, _SQL_TRANSFER_OUT, dc_id, product_id, qty, _nothing_to_release
+        )
+        ref_type = ref_type or RefType.TRANSFER
+    elif movement_type == MovementType.OUTBOUND:
+        if lock_mode == LockMode.NONE:
+            row = await _overwrite_unsafe(conn, dc_id, product_id, qty)
+        else:
+            row = await _update_optimistic(
+                conn, _SQL_CONSUME, dc_id, product_id, qty, _insufficient
+            )
+        ref_type = ref_type or RefType.ISSUE
     else:
-        row = await _update_optimistic(conn, _SQL_CONSUME, dc_id, product_id, qty, _insufficient)
+        raise ValueError(f"consume không xử lý movement_type {movement_type}")
     await _insert_movement(
         conn,
         request_id=request_id,
         dc_id=dc_id,
         product_id=product_id,
-        movement_type=MovementType.OUTBOUND,
+        movement_type=movement_type,
         qty_change=-qty,
         ref_type=ref_type,
         created_by=created_by,
+        ref_id=ref_id,
     )
     return _result(row)
 
