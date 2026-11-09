@@ -305,7 +305,7 @@ Lưu các giao dịch HQ nhận hộ khi một kho bị sập, để đẩy về
 | txn\_type | VARCHAR(10) | NOT NULL, CHECK IN ('INBOUND','OUTBOUND') | Nhập hoặc xuất |
 | product\_id | BIGINT | NOT NULL, FK → product | Hàng hóa |
 | qty | INTEGER | NOT NULL, CHECK (qty \> 0\) | Số lượng |
-| status | VARCHAR(10) | NOT NULL, DEFAULT 'PENDING', CHECK IN ('PENDING','APPLIED','REJECTED') | PENDING: chưa áp dụng xong, kể cả khi kho đã nhận nhưng sự kiện CDC chưa về HQ. APPLIED: Consumer đã thấy request\_id trong sự kiện từ kho, hoặc kho trả duplicate: true khi replay. REJECTED: kho trả 422 khi replay |
+| status | VARCHAR(10) | NOT NULL, DEFAULT 'PENDING', CHECK IN ('PENDING','APPLIED','REJECTED') | PENDING: chưa áp dụng xong, kể cả khi kho đã nhận nhưng sự kiện CDC chưa về HQ. APPLIED: Consumer đã thấy request\_id trong sự kiện từ kho, hoặc kho trả duplicate: true khi replay. REJECTED: kho trả 422 hoặc 400 VALIDATION\_ERROR khi replay |
 | created\_by | VARCHAR(50) |  | Nhân viên kho thao tác |
 | created\_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() | Thời điểm nhận; dùng làm thứ tự khi đẩy lại |
 | updated\_at | TIMESTAMPTZ |  | Lần đổi trạng thái gần nhất |
