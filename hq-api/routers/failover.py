@@ -111,7 +111,7 @@ async def record_pending(
                     "dc_id": dc_id,
                     "product_id": body.product_id,
                     "available": available,
-                    "qty": body.qty,
+                    "requested": body.qty,  # cùng khóa với kho (node-api services/stock.py)
                 },
             )
 

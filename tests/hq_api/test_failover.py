@@ -178,7 +178,7 @@ def test_kb3_inbound_outbound_and_rejected_big_outbound() -> None:
     r = c.post(f"/failover/dc/{DC_TRUNG}/outbound", json=body(REQ_KB3_OUT_BIG, 100))
     assert r.status_code == 422
     assert r.json()["error_code"] == "INSUFFICIENT_STOCK"
-    assert r.json()["details"]["available"] == 55
+    assert r.json()["details"] == {"dc_id": 2, "product_id": 1, "available": 55, "requested": 100}
 
     assert sorted((p["txn_type"], p["qty"]) for p in db.rows()) == [
         ("INBOUND", 30),
