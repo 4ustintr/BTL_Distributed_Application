@@ -18,6 +18,7 @@ from failover_helpers import (
     node_stock,
     target,
     wait_dc_status,
+    wait_snapshot,
     wait_txn_status,
 )
 from fixtures import DEMO_IDS, SKU_A_PRODUCT_ID
@@ -38,6 +39,9 @@ async def test_tc16_replay_rejected() -> None:
     make_reset()
     t = target()
     await wait_dc_status(t, DC_TRUNG, DcStatus.ONLINE)
+    # Seed nhập qua API rồi CDC mới đưa về HQ: chờ snapshot Trung = 40 trước khi dừng Consumer,
+    # nếu không HQ chưa có snapshot (coi là 0) và từ chối ghi hộ xuất 30 (422)
+    await wait_snapshot(t, DC_TRUNG, (40, 40))  # (tồn, khả dụng)
     docker("stop", HQ_CONSUMER_CONTAINER)
     try:
         async with httpx.AsyncClient(timeout=10) as http:
