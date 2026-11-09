@@ -51,6 +51,10 @@ def test_callback_requires_key(client: TestClient) -> None:
     async def shipped(transfer_id: str) -> dict[str, str]:
         return {"id": transfer_id}
 
+    # Route giả chỉ để kiểm khóa: đưa lên đầu để thắng route /shipped thật (F7) khi khớp đường dẫn
+    routes = client.app.router.routes  # type: ignore[attr-defined]
+    routes.insert(0, routes.pop())
+
     assert client.post("/transfers/t1/shipped").status_code == 401
     r = client.post("/transfers/t1/shipped", headers={INTERNAL_KEY_HEADER: KEY})
     assert r.status_code == 200
