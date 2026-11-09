@@ -106,5 +106,18 @@ restart-connector-dc2:
 measure-failover:
 	@echo "TODO: $@ (goi python scripts/measure/m2_m4.py, xem scripts/measure/README.md)"
 
-race race-unsafe check-invariant replay-again bench-cdc:
+# ---- Tranh chấp đồng thời và bất biến (F12) ---------------------------------------------------
+# Máy B: 2 lệnh xuất 30 thùng cùng lúc vào kho Bắc (REQ_RACE_1, REQ_RACE_2).
+race:
+	bash scripts/race.sh
+
+# Máy B: khởi động lại node-api-dc1 với LOCK_MODE=none rồi bắn như trên; xong chạy make reset.
+race-unsafe:
+	bash scripts/race.sh unsafe
+
+# Máy A: GET /invariant, in 4 số và chênh lệch. SKU khác: make check-invariant P=2
+check-invariant:
+	@P=$(P) bash scripts/check-invariant.sh
+
+replay-again bench-cdc:
 	@echo "TODO: $@ (xem docs/spec.md mục F12)"
