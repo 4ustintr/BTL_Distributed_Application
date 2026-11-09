@@ -4,16 +4,26 @@
 - format_status_line / print_status_line: dòng trạng thái theo docs/tests.md mục 3.
 - host_ips / integration_skip_reason: test tích hợp chỉ chạy khi HOST_A_IP = HOST_B_IP
   (docs/tests.md mục 4).
+- integration_target / make_reset: địa chỉ hệ thống thật và lệnh reset cho test tích hợp.
 """
 
 from __future__ import annotations
 
 import os
+import subprocess
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from common.constants import DC_REGION, ENV_HOST_A_IP, ENV_HOST_B_IP, InventorySource
+from common.constants import (
+    DC_REGION,
+    ENV_HOST_A_IP,
+    ENV_HOST_B_IP,
+    ENV_INTERNAL_KEY,
+    ENV_POSTGRES_PASSWORD,
+    InventorySource,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEMO_IDS_FILE = REPO_ROOT / "scripts" / "demo_ids.env"
@@ -72,6 +82,53 @@ def host_ips(
 def integration_skip_reason(host_a: str | None, host_b: str | None) -> str | None:
     """Lý do skip test tích hợp, hoặc None nếu được chạy (HOST_A_IP = HOST_B_IP)."""
     return None if host_a == host_b else INTEGRATION_SAME_HOST_MSG
+
+
+# Địa chỉ hệ thống thật cho test tích hợp (spec F2)
+HQ_API_PORT = 8000  # F2 – hq-api
+NODE_API_PORTS = {1: 8001, 2: 8002, 3: 8003}  # F2 – node-api-dc1..3
+HQ_DB_PORT = 5432  # F2 – pg-hq
+HQ_DB_ROLE = "hq_app"  # db/ – role ứng dụng ở hq_db, đọc kho qua FDW (F3)
+
+
+@dataclass(frozen=True)
+class Target:
+    """URL của HQ API, Node API từng kho và hq_db khi chạy test tích hợp."""
+
+    hq: str
+    nodes: dict[int, str]
+    hq_db: str
+    internal_key: str
+
+
+def integration_target(environ: Mapping[str, str] | None = None) -> Target:
+    """Đọc HOST_A_IP, HOST_B_IP, INTERNAL_KEY, POSTGRES_PASSWORD: biến môi trường, rồi .env."""
+    env = os.environ if environ is None else environ
+    values = {**read_env_file(REPO_ROOT / env.get("ENV_FILE", ".env")), **env}
+    host_a, host_b = values[ENV_HOST_A_IP], values[ENV_HOST_B_IP]
+    password = values[ENV_POSTGRES_PASSWORD]
+    return Target(
+        hq=f"http://{host_a}:{HQ_API_PORT}",
+        nodes={dc: f"http://{host_b}:{port}" for dc, port in NODE_API_PORTS.items()},
+        hq_db=f"postgresql://{HQ_DB_ROLE}:{password}@{host_a}:{HQ_DB_PORT}/hq_db",
+        internal_key=values[ENV_INTERNAL_KEY],
+    )
+
+
+def make_reset() -> None:
+    """docs/tests.md mục 4: test case tự gọi make reset trước khi chạy (xóa volume, seed lại)."""
+    subprocess.run(["make", "reset"], cwd=REPO_ROOT, check=True)
+
+
+def make(*targets: str) -> None:
+    """Lệnh make của F12, ví dụ make("kill-dc2")."""
+    subprocess.run(["make", *targets], cwd=REPO_ROOT, check=True)
+
+
+def docker(*args: str) -> str:
+    """Chạy lệnh docker trên máy này (test tích hợp chỉ chạy khi HQ và kho cùng máy); trả stdout."""
+    done = subprocess.run(["docker", *args], check=True, capture_output=True, text=True)
+    return done.stdout
 
 
 # Nguồn số liệu được ghi chú sau ô kho, ví dụ "TRUNG=35/35(offline)" (tests.md mục 3)
