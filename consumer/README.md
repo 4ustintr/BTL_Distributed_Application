@@ -9,7 +9,8 @@ TC10–TC13 và M1 trong `docs/tests.md`.
   `inventory_snapshot` chỉ khi version mới hơn, chuyển `pending_txn` sang APPLIED (kèm
   `applied_at`, `updated_at`) trong cùng transaction, rồi mới commit offset Kafka (db.md 3.4).
   Sự kiện sai định dạng được gửi DLQ và chờ broker xác nhận trước khi commit offset.
-  Lỗi CSDL hoặc broker làm tiến trình thoát; Docker khởi động lại và đọc lại từ offset đã commit.
+  Lỗi ghi CSDL/commit làm tiến trình thoát để phát lại. Lỗi poll tạm thời và topic chưa có
+  chỉ ghi log rồi tiếp tục; lỗi quyền truy cập/fatal vẫn được báo ra.
 - `main.py`: group `hq-consumer`, chỉ đọc `outbox.event.INVENTORY`, tắt auto commit và auto
   offset store; đóng kết nối khi nhận SIGTERM. Consumer không ghi `transfer_summary`.
   Mỗi snapshot được cập nhật ghi một dòng log JSON có `latency_ms` (dùng cho M1).
@@ -46,3 +47,12 @@ mỗi test tự gọi `make reset`: `make test` (bắt buộc) hoặc `make test
 `make bench-cdc ARGS="DC=1 COUNT=200 OUT=m1.json"`. Script: `scripts/measure/m1_cdc.py`.
 `latency_ms = synced_at − occurred_at` dùng đồng hồ của kho và HQ: đồng bộ NTP hai máy, hoặc đo
 khi kho và HQ cùng một máy, và ghi rõ trong báo cáo. Report thiếu mẫu hoặc độ trễ âm sẽ báo lỗi.
+
+## Bổ sung sau review PR #6
+
+- Realtime không gọi FDW khi kho đã OFFLINE, kể cả đang có pending. Snapshot mode vẫn
+  tính provisional cho OFFLINE/RECOVERING có giao dịch PENDING.
+- TC12 đợi snapshot seed và trạng thái OFFLINE trước khi đo; sau test bật lại kho/connector.
+- GET của Dashboard không gửi Content-Type; chỉ JSON POST mới thêm header này.
+- Hồi quy poll error và transaction: `tests/consumer/test_main.py`, `test_projection.py`.
+- Kết quả kiểm chứng và phạm vi tích hợp: [REVIEW_FIXES.md](REVIEW_FIXES.md).

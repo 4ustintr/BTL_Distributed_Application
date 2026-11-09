@@ -24,7 +24,8 @@ KAFKA_GROUPS = "/opt/kafka/bin/kafka-consumer-groups.sh"
 SEED_STOCK = {1: 100, 2: 40, 3: 10}  # tests.md mục 2: tồn ban đầu Bắc, Trung, Nam
 WAIT_S = 60.0
 
-SQL_SNAPSHOT = """SELECT dc_id, product_id, qty_on_hand, qty_reserved, last_version, last_event_id
+SQL_SNAPSHOT = """SELECT dc_id, product_id, qty_on_hand, qty_reserved, last_version,
+                         last_event_id, synced_at
                   FROM inventory_snapshot ORDER BY dc_id, product_id"""
 
 

@@ -1,5 +1,7 @@
 ﻿import {DC_NAMES, STATUS_NAMES, formatQty, totals, sourceLabel, validateTransfer} from "./domain.js";
 
+import {requestHeaders} from "./http.js";
+
 const $ = (id) => document.getElementById(id);
 const root = window.CONFIG?.HQ_URL?.replace(/\/$/, "");
 const state = {inventory: null, statuses: [], busy: false, holdUntil: 0, transfersLoaded: false, pendingLoaded: false};
@@ -7,7 +9,7 @@ const state = {inventory: null, statuses: [], busy: false, holdUntil: 0, transfe
 async function api(path, options = {}) {
   if (!root) throw new Error("Chưa có địa chỉ kết nối trung tâm.");
   const response = await fetch(`${root}${path}`, {
-    ...options, headers: {"Content-Type": "application/json", ...options.headers},
+    ...options, headers: requestHeaders(options),
     signal: AbortSignal.timeout(options.method === "POST" ? 120000 : 8000), cache: "no-store",
   });
   const data = await response.json().catch(() => ({}));

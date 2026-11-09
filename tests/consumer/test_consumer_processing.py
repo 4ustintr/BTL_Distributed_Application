@@ -120,7 +120,7 @@ async def test_dlq_delivery_before_acknowledgement():
         (KafkaError.UNKNOWN_TOPIC_OR_PART, True),  # topic chưa có: Debezium chưa phát sự kiện nào
         (KafkaError._UNKNOWN_TOPIC, True),
         (KafkaError._PARTITION_EOF, True),
-        (KafkaError._ALL_BROKERS_DOWN, False),
+        (KafkaError._ALL_BROKERS_DOWN, True),
     ],
 )
 def test_poll_error_topic_not_created_yet_is_not_fatal(code, waits):

@@ -95,8 +95,11 @@ async def inventory(
     items: list[DashboardInventoryItem] = []
     candidates: list[int] = []
     for row in rows:
-        provisional = row["status"] in (DcStatus.OFFLINE, DcStatus.RECOVERING) and bool(
-            row["pending_count"]
+        offline_realtime = mode == DashboardMode.REALTIME and row["status"] == DcStatus.OFFLINE
+        provisional = (
+            not offline_realtime
+            and row["status"] in (DcStatus.OFFLINE, DcStatus.RECOVERING)
+            and bool(row["pending_count"])
         )
         source = InventorySource.SNAPSHOT
         if row["status"] == DcStatus.OFFLINE:
