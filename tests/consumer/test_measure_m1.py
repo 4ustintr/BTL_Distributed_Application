@@ -1,10 +1,19 @@
+"""Unit test scripts/measure/m1_cdc.py (số đo M1, docs/tests.md mục 5)."""
+
 import argparse
+import importlib.util
 import json
 
 import httpx
 import pytest
+from fixtures import REPO_ROOT
 
-from consumer.benchmark import send, summarize
+SCRIPT = REPO_ROOT / "scripts" / "measure" / "m1_cdc.py"
+_spec = importlib.util.spec_from_file_location("m1_cdc", SCRIPT)
+assert _spec is not None and _spec.loader is not None
+m1_cdc = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(m1_cdc)
+send, summarize = m1_cdc.send, m1_cdc.summarize
 
 
 def test_m1_percentiles_and_replayed_logs_are_deduplicated():

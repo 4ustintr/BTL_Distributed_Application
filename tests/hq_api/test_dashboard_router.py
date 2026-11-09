@@ -1,4 +1,4 @@
-"""TC12/TC13 and F7 read endpoints, without requiring the other owners' workers."""
+"""Router đọc của HQ (F7): /dashboard/inventory, /invariant – lỗi F5, SKU lạ; không cần CSDL."""
 
 from unittest.mock import AsyncMock, Mock
 
@@ -20,13 +20,13 @@ def read_app():
     return app
 
 
-async def test_tc12_routes_are_registered(read_app):
+async def test_routes_are_registered(read_app):
     paths = set(read_app.openapi()["paths"])
     assert {"/dashboard/inventory", "/dc-status", "/pending-txn", "/invariant"} <= paths
 
 
 @pytest.mark.parametrize("query", ["mode=wrong", "product_id=0", "product_id=no"])
-async def test_tc12_bad_query_uses_f5_errors(read_app, query):
+async def test_bad_query_uses_f5_errors(read_app, query):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=read_app), base_url="http://test"
     ) as client:
@@ -35,7 +35,7 @@ async def test_tc12_bad_query_uses_f5_errors(read_app, query):
     assert response.json()["error_code"] == "VALIDATION_ERROR"
 
 
-async def test_tc12_unknown_product_is_not_zero_stock(read_app):
+async def test_unknown_product_is_not_zero_stock(read_app):
     read_app.state.pool.fetchval = AsyncMock(return_value=None)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=read_app), base_url="http://test"

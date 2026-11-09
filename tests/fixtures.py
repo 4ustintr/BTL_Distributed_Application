@@ -120,6 +120,17 @@ def make_reset() -> None:
     subprocess.run(["make", "reset"], cwd=REPO_ROOT, check=True)
 
 
+def make(*targets: str) -> None:
+    """Lệnh make của F12, ví dụ make("kill-dc2")."""
+    subprocess.run(["make", *targets], cwd=REPO_ROOT, check=True)
+
+
+def docker(*args: str) -> str:
+    """Chạy lệnh docker trên máy này (test tích hợp chỉ chạy khi HQ và kho cùng máy); trả stdout."""
+    done = subprocess.run(["docker", *args], check=True, capture_output=True, text=True)
+    return done.stdout
+
+
 # Nguồn số liệu được ghi chú sau ô kho, ví dụ "TRUNG=35/35(offline)" (tests.md mục 3)
 _ANNOTATED_SOURCES = {InventorySource.OFFLINE, InventorySource.PROVISIONAL}
 _NA = "NA"
