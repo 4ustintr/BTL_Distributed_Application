@@ -1,10 +1,11 @@
-"""TC05 – Điều chuyển trọn vẹn, phần /sync-status ở kho (docs/tests.md mục 4).
+"""/sync-status ở kho – phần kho của TC05 (docs/tests.md mục 4).
 
 HQ đồng bộ SHIPPED xuống bản INBOUND ở kho đích (F10.c, F10.d bước 1) và RECEIVED xuống bản
 OUTBOUND ở kho nguồn (hld.md Kịch bản 1; TC05: RECEIVED ở cả 2 transfer_order). Chỉ đi từ trạng
 thái liền trước (db.md 3.2 quy tắc 2). Cặp (direction, status) khác bị bỏ qua và vẫn trả 200 (F6),
-vì đổi trạng thái mà không chạy bước tồn kho đi kèm sẽ làm lệch tồn. CANCELLED: test_tc07_cancel.py.
-Thân phản hồi của /sync-status chưa có trong spec (F6 chỉ ghi 200) nên test không assert body.
+vì đổi trạng thái mà không chạy bước tồn kho đi kèm sẽ làm lệch tồn.
+CANCELLED: test_transfer_cancel.py.
+F6: /sync-status trả 200, không có thân phản hồi.
 
 Test CI, không cần CSDL (connection giả ở saga_fakes.py).
 Spec: F6, F8, F10 (câu dẫn); db.md 2.9, 2.11, 3.2.
@@ -109,6 +110,7 @@ def test_sync_status_moves_forward(
     node = make_node(dc_id, results={UPDATE: row})
     r = node.post(sync_path(tid), sync_body(status))
     assert r.status_code == 200, r.text
+    assert r.content == b"", r.text  # F6: không có thân phản hồi
 
     log = node.log
     # F10: một transaction, lệnh đầu là SET LOCAL app.source = 'api'
@@ -136,6 +138,7 @@ def test_sync_status_ignored_when_not_previous_state(
     node = make_node(DC_NAM, results={UPDATE: None})
     r = node.post(sync_path(uuid4()), sync_body(status))
     assert r.status_code == 200, r.text
+    assert r.content == b"", r.text
     assert node.touched_stock() == [], node.log
 
 
@@ -144,4 +147,5 @@ def test_sync_status_created_does_nothing(make_node: MakeNode) -> None:
     node = make_node(DC_NAM)
     r = node.post(sync_path(uuid4()), sync_body(TransferStatus.CREATED))
     assert r.status_code == 200, r.text
+    assert r.content == b"", r.text
     assert node.log == []
