@@ -6,8 +6,17 @@ import uuid
 from fixtures import DEMO_IDS, format_status_line
 
 EXPECTED_KEYS = {
-    "REQ_SEED_1", "REQ_SEED_2", "REQ_SEED_3", "REQ_RACE_1", "REQ_RACE_2",
-    "REQ_KB2_OUT", "REQ_KB3_IN", "REQ_KB3_OUT", "REQ_KB3_OUT_BIG",
+    "REQ_SEED_1",
+    "REQ_SEED_2",
+    "REQ_SEED_3",
+    "REQ_RACE_1",
+    "REQ_RACE_2",
+    "REQ_KB2_OUT",
+    "REQ_KB3_IN",
+    "REQ_KB3_OUT",
+    "REQ_KB3_OUT_BIG",
+    "REQ_TC16_OUT_LOCAL",
+    "REQ_TC16_OUT_FAILOVER",
 }
 
 
@@ -18,6 +27,12 @@ def test_demo_ids_loaded_and_are_uuids(demo_ids: dict[str, str]) -> None:
         uuid.UUID(value)
         assert os.environ[key] == value
     assert len(set(demo_ids.values())) == len(demo_ids)
+
+
+def test_demo_ids_are_uuid5_of_key(demo_ids: dict[str, str]) -> None:
+    """Quy ước sinh mã: uuid5(NAMESPACE_URL, "btl-kho-phan-tan:<KEY>")."""
+    for key, value in demo_ids.items():
+        assert value == str(uuid.uuid5(uuid.NAMESPACE_URL, f"btl-kho-phan-tan:{key}"))
 
 
 def _item(dc_id: int, on_hand: int, reserved: int, source: str, transit: int = 0) -> dict:
