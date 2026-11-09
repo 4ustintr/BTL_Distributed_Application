@@ -104,6 +104,7 @@ def test_f11_parameters() -> None:
     assert c.FDW_QUERY_TIMEOUT_S == 5
     assert (c.HTTP_TIMEOUT_S, c.HTTP_MAX_RETRIES, c.HTTP_RETRY_INTERVAL_S) == (2, 4, 2)
     assert c.VERSION_CONFLICT_MAX_RETRIES == 3
+    assert c.UNSAFE_READ_WRITE_DELAY_S == 0.2
     assert c.RECONCILE_INTERVAL_S == 60
     assert c.REPLAY_ROUND_MAX_S == 30
     assert c.REPLAY_INTERVAL_S == 2
