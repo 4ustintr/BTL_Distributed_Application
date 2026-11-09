@@ -1,121 +1,48 @@
 # Phần Ngọc Chung: CDC và đọc phân tán
 
-Nhánh: `chung/cdc/consumer-dashboard`. Nguồn hợp đồng: spec F5, F7, F8;
-`docs/db.md` mục 2.4 và 3.4; `docs/demo.md`; TC10–TC13, M1 trong `docs/tests.md`.
+Nguồn hợp đồng: spec F5, F7, F8; `docs/db.md` mục 2.4 và 3.4; `docs/demo.md` Kịch bản 2;
+TC10–TC13 và M1 trong `docs/tests.md`.
 
 ## Code
 
-- `processing.py`: xác thực payload/key, chống trùng bằng `processed_event`, upsert snapshot
-  theo version, chuyển pending sang APPLIED cùng transaction, rồi mới commit offset Kafka.
-  Sự kiện lỗi định dạng được gửi DLQ và chờ broker xác nhận trước khi commit offset.
-  Lỗi CSDL/broker làm tiến trình thoát; restart policy phát lại sự kiện chưa xác nhận.
-- `main.py`: group `hq-consumer`, chỉ đọc INVENTORY, tắt auto commit và auto offset store;
-  đóng kết nối khi nhận SIGTERM. Consumer không ghi `transfer_summary`.
-- `hq-api/routers/dashboard.py`: snapshot, realtime FDW song song, offline fallback,
-  số tạm tính, trạng thái kho và danh sách giao dịch ghi hộ.
-- `hq-api/routers/invariant.py`: đọc đủ ba kho, tính bảo toàn hàng; trả 503 khi thiếu kho.
-- `dashboard/`: HTML/CSS/JS thuần, dùng config.js do nginx sinh; cập nhật mỗi 2 giây,
-  đối soát, kiểm tra bất biến, tạo/hủy phiếu và xem PENDING/APPLIED/REJECTED.
-  Kết quả đối soát được giữ 15 giây; nút Làm mới quay về snapshot ngay.
+- `processing.py`: kiểm payload và key Kafka, chặn trùng bằng `processed_event`, upsert
+  `inventory_snapshot` chỉ khi version mới hơn, chuyển `pending_txn` sang APPLIED (kèm
+  `applied_at`, `updated_at`) trong cùng transaction, rồi mới commit offset Kafka (db.md 3.4).
+  Sự kiện sai định dạng được gửi DLQ và chờ broker xác nhận trước khi commit offset.
+  Lỗi CSDL hoặc broker làm tiến trình thoát; Docker khởi động lại và đọc lại từ offset đã commit.
+- `main.py`: group `hq-consumer`, chỉ đọc `outbox.event.INVENTORY`, tắt auto commit và auto
+  offset store; đóng kết nối khi nhận SIGTERM. Consumer không ghi `transfer_summary`.
+  Mỗi snapshot được cập nhật ghi một dòng log JSON có `latency_ms` (dùng cho M1).
+- `hq-api/routers/dashboard.py`: `/dashboard/inventory` (snapshot, realtime FDW từng kho
+  riêng, offline, tạm tính), `/dc-status`, `/pending-txn`.
+- `hq-api/routers/invariant.py`: `/invariant` đọc đủ ba kho, trả 503 khi thiếu kho.
+- `dashboard/`: HTML/CSS/JS thuần; cập nhật mỗi 2 giây, đối soát, kiểm tra bất biến,
+  tạo và hủy phiếu (TIMEOUT), xem giao dịch ghi hộ.
 
-## Chạy Consumer cùng hạ tầng nhóm
+## Chạy
 
-Tại gốc repo, sau khi có `.env` và PostgreSQL/Kafka của nhóm:
+Consumer là service `hq-consumer` trong `infra/compose.hq.yml`, dựng cùng `make up-hq` và
+`make reset`. Xem log: `make logs S=hq-consumer`.
 
-```bash
-docker compose --env-file .env -f infra/compose.hq.yml -f consumer/compose.yml up -d --build hq-consumer
-docker logs -f hq-consumer
-```
+## Kiểm thử
 
-Overlay cung cấp service còn thiếu mà không sửa `infra/compose.hq.yml`.
-Khi trưởng nhóm tích hợp, ghép service này vào compose chính và nối Makefile với các lệnh M1.
-HQ main.py đã include hai router; không cần sửa file đó.
+| Test | File | Loại |
+| :---- | :---- | :---- |
+| Consumer: commit offset sau CSDL, DLQ, key sai | `tests/consumer/test_consumer_processing.py` | unit (CI) |
+| Router đọc: lỗi F5, SKU lạ | `tests/hq_api/test_dashboard_router.py` | unit (CI) |
+| Script M1 | `tests/consumer/test_measure_m1.py` | unit (CI) |
+| TC10 – đọc lại toàn bộ topic, snapshot và processed_event không đổi | `tests/consumer/test_tc10_consumer_replay.py` | tích hợp |
+| TC11 – sự kiện version cũ không ghi đè (tùy chọn) | `tests/consumer/test_tc11_out_of_order.py` | tích hợp |
+| TC12 – kho chết, realtime dưới 1 giây | `tests/hq_api/test_tc12_fdw_dead_dc.py` | tích hợp |
+| TC13 – kho treo, realtime 3–5 giây (tùy chọn) | `tests/hq_api/test_tc13_fdw_hung_dc.py` | tích hợp |
 
-## Kiểm thử riêng, không dùng dữ liệu demo
-
-Chỉ yêu cầu Docker Desktop. Python 3.11 và thư viện chạy trong container.
-Không có thư viện mới ngoài requirements hiện có. Các lệnh sau chạy từ gốc repo:
-
-```bash
-docker compose -f tests/consumer/compose.integration.yml up -d --wait
-docker compose -f tests/consumer/compose.integration.yml build chung-runner
-docker compose -f tests/consumer/compose.integration.yml run --rm --use-aliases chung-runner
-```
-
-Lệnh cuối chạy ruff và cả bốn bộ pytest theo thứ tự riêng để tránh trùng module `routers`.
-Các fixture chỉ reset dữ liệu khi `HQ_DB_URL` trỏ đến `chung-hq` của bộ test này.
-Không chạy nhiều bộ tích hợp đồng thời vì chúng cùng khởi tạo lại dữ liệu và topic test.
-
-Chỉ chạy test không cần hạ tầng:
-
-```bash
-docker compose -f tests/consumer/compose.integration.yml run --rm chung-runner sh tests/consumer/run-tests.sh -m "not integration"
-```
-
-Test giao diện dùng Node có sẵn các module kiểm thử chuẩn, không npm/build:
-
-```bash
-docker run --rm -v "${PWD}:/workspace" -w /workspace node:20-alpine node --experimental-default-type=module --test tests/dashboard/test_dashboard.mjs
-```
-
-Hai probe kill/pause thật được skip khi không bật sự cố. Sau lượt test đầy đủ,
-chạy trong PowerShell để tạo đúng sự cố trên kho test và tự bật lại:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tests/consumer/verify-faults.ps1
-```
-
-Port `127.0.0.1:15434` chỉ dành cho probe này. Nó mô phỏng đúng host máy B vẫn sống
-trong khi container kho bị kill; dùng DNS của container đã dừng sẽ đo thêm lỗi DNS.
-TC13 chấp nhận 0.5 giây sai số cho thời gian hủy truy vấn sau deadline 5 giây.
-
-## Mở Dashboard kiểm tra
-
-Sau khi build runner, chạy test sau để đưa bộ test về tồn ban đầu 100/40/10:
-
-```bash
-docker compose -f tests/consumer/compose.integration.yml run --rm chung-runner python -m pytest tests/hq_api/test_tc12_database.py::test_tc12_live_stock_and_invariant -q
-docker compose -f tests/consumer/compose.integration.yml --profile preview up -d chung-api chung-dashboard
-```
-
-Mở http://localhost:13000. Đây là HQ API thật với hai router của Chung, trên CSDL test.
-Phần API phiếu của Hiếu chưa hiện thực nên danh sách/tạo/hủy phiếu chưa chạy trọn;
-Dashboard hiển thị lỗi và giữ các phần khác hoạt động. Không có API giả cho phần đó.
+Test tích hợp chạy trên hệ thống thật khi HQ và kho cùng một máy (`HOST_A_IP = HOST_B_IP`),
+mỗi test tự gọi `make reset`: `make test` (bắt buộc) hoặc `make test-all` (cả tùy chọn).
 
 ## M1
 
-Consumer ghi một dòng JSON cho mỗi snapshot thực sự được cập nhật, gồm event_id,
-request_id, occurred_at, synced_at và latency_ms. Không dùng timestamp để sắp sự kiện.
-Chạy ở môi trường đo riêng và đồng bộ đồng hồ hai máy trước khi lấy kết quả báo cáo.
-
-```bash
-python -m consumer.benchmark send --node-url http://HOST_B_IP:8002 --prepare-stock --output requests.json
-docker logs hq-consumer > consumer.log 2>&1
-python -m consumer.benchmark report --requests requests.json --log consumer.log --output cdc-results.json
-```
-
-Mặc định 200 lệnh xuất, cách nhau 100 ms; `--prepare-stock` nhập thêm 200 thùng qua API.
-Mỗi request có UUID riêng, được lưu trước khi gửi để tra cứu cả khi HTTP timeout.
-Report thiếu mẫu hoặc độ trễ âm sẽ báo lỗi, không âm thầm bỏ mẫu.
-Trên Windows PowerShell 5, xuất log UTF-8 bằng `docker logs hq-consumer 2>&1 | Out-File consumer.log -Encoding utf8`.
-
-`validation/M1-local.json` là phép đo trên cùng máy Docker qua PostgreSQL → Debezium → Kafka
-→ Consumer → HQ, bằng nguồn phát SQL trong test. Nó chưa thay thế phép đo qua Node API
-và hai máy demo. Test tích hợp thực hiện lại được 200 sự kiện này.
-
-## Phần cần ghép với nhóm
-
-- Tuấn Minh: nhập/xuất và outbox thật theo F6/F10; seed tồn qua API.
-- Minh Hiếu: API phiếu và trạng thái SHIPPED để tính hàng đi đường.
-- Nhật Khánh: Health Monitor, failover và Replay Worker. Chung đọc trạng thái;
-  Consumer là bên đánh dấu APPLIED sau khi CDC về.
-- Minh Danh: ghép overlay Consumer và lệnh benchmark/check-invariant vào hạ tầng chính.
-
-Chưa xác nhận trọn ba kịch bản trên hai máy. Kiểm tra trực quan bằng Edge bị công cụ
-computer-use từ chối; đã kiểm tra cú pháp JS, logic JS, HTTP và MIME của file tĩnh.
-
-Dọn bộ test sau khi xem xong (chỉ xóa container/volume của project btl-chung-tests):
-
-```bash
-docker compose -f tests/consumer/compose.integration.yml --profile preview --profile validation down -v
-```
+`make bench-cdc` (máy A): gửi 200 lệnh xuất 1 thùng cách nhau 100 ms vào kho Trung (nhập trước
+200 thùng), đọc log `hq-consumer`, in p50, p95, max (ms). Đổi tham số:
+`make bench-cdc ARGS="DC=1 COUNT=200 OUT=m1.json"`. Script: `scripts/measure/m1_cdc.py`.
+`latency_ms = synced_at − occurred_at` dùng đồng hồ của kho và HQ: đồng bộ NTP hai máy, hoặc đo
+khi kho và HQ cùng một máy, và ghi rõ trong báo cáo. Report thiếu mẫu hoặc độ trễ âm sẽ báo lỗi.

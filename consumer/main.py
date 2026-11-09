@@ -8,7 +8,7 @@ import os
 import signal
 
 import asyncpg
-from confluent_kafka import Consumer, KafkaException, Producer
+from confluent_kafka import Consumer, KafkaError, KafkaException, Producer
 
 from common.constants import (
     CONSUMER_GROUP,
@@ -19,6 +19,19 @@ from common.constants import (
 from consumer.processing import InventoryStore, handle_message
 
 log = logging.getLogger("hq-consumer")
+
+TOPIC_WAIT_S = 2.0  # chờ trước khi poll lại khi topic chưa được tạo
+
+# Lỗi poll không làm mất sự kiện và tự hết: topic outbox.event.INVENTORY chỉ được Kafka tạo khi
+# Debezium phát sự kiện đầu tiên (sau make reset), và tín hiệu đọc tới cuối partition.
+_TRANSIENT_POLL_ERRORS = frozenset(
+    {KafkaError.UNKNOWN_TOPIC_OR_PART, KafkaError._UNKNOWN_TOPIC, KafkaError._PARTITION_EOF}
+)
+
+
+def is_transient_poll_error(error: KafkaError) -> bool:
+    """Lỗi poll nên chờ rồi đọc tiếp, thay vì thoát tiến trình."""
+    return error.code() in _TRANSIENT_POLL_ERRORS
 
 
 async def run() -> None:
@@ -48,6 +61,10 @@ async def run() -> None:
             if message is None:
                 continue
             if message.error():
+                if is_transient_poll_error(message.error()):
+                    log.warning("Kafka: %s; chờ rồi đọc tiếp", message.error())
+                    await asyncio.sleep(TOPIC_WAIT_S)
+                    continue
                 raise KafkaException(message.error())
             # A database/broker failure exits without acknowledging this message.
             # The restart policy replays it; no later offset can skip it.

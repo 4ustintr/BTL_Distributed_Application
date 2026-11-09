@@ -80,7 +80,7 @@ class InventoryStore:
             )
             if event.request_id is not None:
                 await connection.execute(
-                    """UPDATE pending_txn SET status = $2, applied_at = now()
+                    """UPDATE pending_txn SET status = $2, applied_at = now(), updated_at = now()
                        WHERE txn_id = $1 AND status = $3""",
                     event.request_id,
                     PendingTxnStatus.APPLIED,
