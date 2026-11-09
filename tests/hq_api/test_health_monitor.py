@@ -1,4 +1,4 @@
-"""Health Monitor (F9 bảng dc_status, F10.j) – phần HQ của TC14 và số đo M2. Không cần CSDL.
+"""Unit test Health Monitor (F9 bảng dc_status, F10.j), hỗ trợ TC14 và số đo M2. Không cần CSDL.
 
 Kho thật được giả bằng httpx.MockTransport; dc_status giả trong bộ nhớ, cùng quy tắc UPDATE có
 điều kiện như PgHealthStore.
@@ -109,7 +109,8 @@ def monitor_for(store: FakeHealthStore, *nodes: FakeNode) -> HealthMonitor:
         (DcStatus.RECOVERING, NodeMode.ONLINE, False, None),  # việc của Replay Worker
         (DcStatus.RECOVERING, NodeMode.RECOVERING, True, None),
         (DcStatus.ONLINE, NodeMode.ONLINE, False, None),
-        (DcStatus.ONLINE, NodeMode.RECOVERING, False, None),  # F9 không có lối, chỉ cảnh báo
+        (DcStatus.ONLINE, NodeMode.RECOVERING, False, DcStatus.RECOVERING),  # khởi động lại nhanh
+        (DcStatus.ONLINE, NodeMode.RECOVERING, True, DcStatus.RECOVERING),
     ],
 )
 def test_next_status_on_success(
@@ -223,6 +224,28 @@ async def test_network_blip_with_pending_goes_recovering() -> None:
     store = FakeHealthStore({DC_TRUNG: Row(DcStatus.OFFLINE)}, pending={DC_TRUNG})
     await monitor_for(store, FakeNode(DC_TRUNG, "ONLINE")).tick()
     assert store.rows[DC_TRUNG].status == DcStatus.RECOVERING
+
+
+async def test_fast_restart_online_to_recovering() -> None:
+    """F9: kho khởi động lại nhanh hơn 3 chu kỳ (docker restart) -> ONLINE -> RECOVERING.
+
+    Nhờ vậy Replay Worker thấy kho và gọi /recovery/complete, kho không kẹt ở RECOVERING.
+    """
+    store = FakeHealthStore({DC_TRUNG: Row(DcStatus.ONLINE)})
+    node = FakeNode(DC_TRUNG, "DOWN")
+    monitor = monitor_for(store, node)
+    await monitor.tick()  # 1 lần lỗi, chưa tới OFFLINE
+    node.state = "RECOVERING"
+    await monitor.tick()
+    row = store.rows[DC_TRUNG]
+    assert (row.status, row.missed_count, row.node_mode, row.status_changes) == (
+        DcStatus.RECOVERING,
+        0,
+        NodeMode.RECOVERING,
+        1,
+    )
+    await monitor.tick()  # đã RECOVERING: không đổi thêm
+    assert row.status_changes == 1
 
 
 async def test_recovering_to_online_is_left_to_replay_worker() -> None:

@@ -43,15 +43,18 @@ OFFLINE_FROM: tuple[DcStatus, ...] = (DcStatus.ONLINE, DcStatus.RECOVERING)
 def next_status_on_success(current: DcStatus, mode: NodeMode, has_pending: bool) -> DcStatus | None:
     """Bảng dc_status ở F9, các dòng Health Monitor kích hoạt khi health check thành công.
 
-    Chỉ có lối ra từ OFFLINE: sang RECOVERING khi kho báo RECOVERING hoặc còn pending_txn
-    PENDING; sang ONLINE khi kho báo ONLINE và không còn PENDING. Trả None = giữ nguyên.
-    RECOVERING -> ONLINE là việc của Replay Worker (F9, F10.i bước 3).
+    - OFFLINE -> RECOVERING: kho báo RECOVERING hoặc còn pending_txn PENDING.
+    - OFFLINE -> ONLINE: kho báo ONLINE và không còn PENDING (kho chỉ mất mạng).
+    - ONLINE -> RECOVERING: kho báo RECOVERING (khởi động lại nhanh hơn 3 chu kỳ).
+    RECOVERING -> ONLINE là việc của Replay Worker (F9, F10.i bước 3). Trả None = giữ nguyên.
     """
-    if current != DcStatus.OFFLINE:
-        return None
-    if mode == NodeMode.RECOVERING or has_pending:
+    if current == DcStatus.OFFLINE:
+        if mode == NodeMode.RECOVERING or has_pending:
+            return DcStatus.RECOVERING
+        return DcStatus.ONLINE
+    if current == DcStatus.ONLINE and mode == NodeMode.RECOVERING:
         return DcStatus.RECOVERING
-    return DcStatus.ONLINE
+    return None
 
 
 def should_go_offline(current: DcStatus, missed_count: int) -> bool:
@@ -157,7 +160,6 @@ class HealthMonitor:
     def __init__(self, store: HealthStore, nodes: Mapping[int, InternalClient]) -> None:
         self.store = store
         self.nodes = nodes
-        self._warned_stale: set[int] = set()
 
     async def tick(self) -> None:
         """Một chu kỳ: kiểm tra mọi kho song song, kho treo không làm chậm kho khác."""
@@ -180,10 +182,8 @@ class HealthMonitor:
         if current is None:
             log.warning("Kho %s chưa có dòng dc_status (chưa chạy make seed?)", dc_id)
             return
-        self._warn_if_stale(dc_id, current, mode)
-        if current != DcStatus.OFFLINE:
-            return
-        target = next_status_on_success(current, mode, await self.store.has_pending(dc_id))
+        has_pending = current == DcStatus.OFFLINE and await self.store.has_pending(dc_id)
+        target = next_status_on_success(current, mode, has_pending)
         if target is not None and await self.store.transition(dc_id, (current,), target):
             log.info("Kho %s: %s -> %s (node_mode=%s)", dc_id, current, target, mode)
 
@@ -200,19 +200,6 @@ class HealthMonitor:
                     result.status,
                     result.missed_count,
                 )
-
-    def _warn_if_stale(self, dc_id: int, current: DcStatus, mode: NodeMode) -> None:
-        """Kho khởi động lại nhanh hơn 3 chu kỳ: HQ còn ONLINE mà kho báo RECOVERING.
-
-        F9 không có chuyển ONLINE -> RECOVERING nên không đổi trạng thái; chỉ cảnh báo
-        (đề xuất bổ sung spec). Gỡ kẹt: make kill-dc2, chờ OFFLINE, rồi make start-dc2.
-        """
-        stale = current == DcStatus.ONLINE and mode == NodeMode.RECOVERING
-        if stale and dc_id not in self._warned_stale:
-            log.warning("Kho %s báo RECOVERING nhưng dc_status vẫn ONLINE (F9 chưa có lối)", dc_id)
-            self._warned_stale.add(dc_id)
-        elif not stale:
-            self._warned_stale.discard(dc_id)
 
 
 async def run(app: FastAPI) -> None:
