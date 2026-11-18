@@ -1,7 +1,24 @@
 ﻿import test from "node:test";
 import assert from "node:assert/strict";
-import {totals, sourceLabel, validateTransfer} from "../../dashboard/js/domain.js";
+import {totals, sourceLabel, validateTransfer, failureMessage, asSentence} from "../../dashboard/js/domain.js";
 import {requestHeaders} from "../../dashboard/js/http.js";
+
+test("network failures are shown in Vietnamese, not the browser's English text", () => {
+  assert.equal(failureMessage(new TypeError("Failed to fetch")), "Không gọi được HQ API.");
+  const timeout = new Error("signal timed out");
+  timeout.name = "TimeoutError";
+  assert.equal(failureMessage(timeout), "HQ API không trả lời kịp.");
+  const aborted = new Error("aborted");
+  aborted.name = "AbortError";
+  assert.equal(failureMessage(aborted), "HQ API không trả lời kịp.");
+  assert.equal(failureMessage(new Error("Kho đang mất kết nối")), "Kho đang mất kết nối.");
+});
+test("messages joined into a notice always end with a full stop", () => {
+  assert.equal(asSentence("Không đủ hàng khả dụng"), "Không đủ hàng khả dụng.");
+  assert.equal(asSentence("Đã xong."), "Đã xong.");
+  assert.equal(asSentence("Có lỗi?"), "Có lỗi?");
+  assert.equal(asSentence(""), "");
+});
 
 test("GET polling avoids Content-Type preflight; JSON writes carry the header", () => {
   assert.deepEqual(requestHeaders(), {});

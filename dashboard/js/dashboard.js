@@ -1,4 +1,5 @@
-﻿import {DC_NAMES, STATUS_NAMES, formatQty, totals, sourceLabel, validateTransfer} from "./domain.js";
+﻿// ?v=2: buộc trình duyệt bỏ bản domain.js cũ trong bộ nhớ đệm (bản cũ thiếu failureMessage)
+import {DC_NAMES, STATUS_NAMES, formatQty, totals, sourceLabel, validateTransfer, failureMessage, asSentence} from "./domain.js?v=2";
 
 import {requestHeaders} from "./http.js";
 
@@ -8,12 +9,15 @@ const state = {inventory: null, statuses: [], busy: false, holdUntil: 0, transfe
 
 async function api(path, options = {}) {
   if (!root) throw new Error("Chưa có địa chỉ kết nối trung tâm.");
-  const response = await fetch(`${root}${path}`, {
-    ...options, headers: requestHeaders(options),
-    signal: AbortSignal.timeout(options.method === "POST" ? 120000 : 8000), cache: "no-store",
-  });
+  let response;
+  try {
+    response = await fetch(`${root}${path}`, {
+      ...options, headers: requestHeaders(options),
+      signal: AbortSignal.timeout(options.method === "POST" ? 120000 : 8000), cache: "no-store",
+    });
+  } catch (error) { throw new Error(failureMessage(error)); }
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.message || `Không tải được dữ liệu (${response.status}).`);
+  if (!response.ok) throw new Error(asSentence(data.message || `Không tải được dữ liệu (${response.status})`));
   return data;
 }
 function el(tag, className, text) {
@@ -140,7 +144,8 @@ async function refresh(manual = false) {
     await Promise.allSettled([loadTransfers(), loadPending()]);
   } catch (error) {
     if (!state.inventory) $("warehouses").replaceChildren(el("p", "empty", "Chưa tải được tồn kho."));
-    notice(`Không thể cập nhật từ trung tâm. ${error.message} Số đang hiển thị là lần tải thành công gần nhất.`);
+    const shown = state.inventory ? "Số đang hiển thị là lần tải thành công gần nhất." : "Chưa tải được số liệu nào.";
+    notice(`Không thể cập nhật từ trung tâm. ${asSentence(error.message)} ${shown}`);
     $("connection").className = "connection error";
     $("connection").textContent = "Mất kết nối HQ";
   } finally {

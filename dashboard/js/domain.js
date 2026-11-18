@@ -21,6 +21,18 @@ export function sourceLabel(item) {
     default: return `Bản tổng hợp · Cập nhật lúc ${stamp}`;
   }
 }
+// Thêm dấu chấm cuối câu khi thiếu, để ghép nhiều câu vào một thông báo.
+export function asSentence(text) {
+  const s = String(text || "").trim();
+  return !s || /[.!?…]$/.test(s) ? s : `${s}.`;
+}
+// fetch ném TypeError khi không kết nối được, TimeoutError/AbortError khi quá thời gian;
+// trình duyệt ghi lý do bằng tiếng Anh ("Failed to fetch") nên đổi sang câu tiếng Việt.
+export function failureMessage(error) {
+  if (error?.name === "TimeoutError" || error?.name === "AbortError") return "HQ API không trả lời kịp.";
+  if (error instanceof TypeError) return "Không gọi được HQ API.";
+  return asSentence(error?.message || "Lỗi không xác định");
+}
 export function validateTransfer(from, to, qty) {
   if (!(from in DC_NAMES) || !(to in DC_NAMES)) return "Vui lòng chọn kho hợp lệ.";
   if (from === to) return "Kho nguồn và kho đích phải khác nhau.";
