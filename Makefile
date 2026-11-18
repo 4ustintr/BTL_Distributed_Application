@@ -3,14 +3,15 @@ TEST_DIRS = tests/common tests/node_api tests/hq_api tests/consumer
 # Test JavaScript của giao diện (node --test); thư mục chưa có file .js/.mjs thì bỏ qua
 JS_TEST_DIRS = tests/wms tests/dashboard
 
-.PHONY: up-hq up-dc down-hq down-dc ps logs reset seed race race-unsafe check-invariant \
-        pause-dc2 unpause-dc2 kill-dc2 start-dc2 restart-connector-dc2 replay-again bench-cdc \
-        test test-all test-ci test-js lint measure-failover
+.PHONY: up-hq up-dc down-hq down-dc ps logs reset reset-dc reset-hq seed race race-unsafe \
+        check-invariant pause-dc2 unpause-dc2 kill-dc2 start-dc2 restart-connector-dc2 replay-again \
+        preflight bench-cdc test test-all test-ci test-js lint measure-failover
 
 # Docker Compose (F2, F12). Biến đọc từ .env ở gốc repo; đổi file bằng: make up-hq ENV_FILE=...
 ENV_FILE ?= .env
 # Script trong infra/scripts, scripts/ đọc ENV_FILE và CONNECT_URL từ môi trường.
-CONNECT_URL ?= http://localhost:8083
+# CONNECT_URL để trống thì lib.sh dùng http://HOST_A_IP:8083 (chạy được từ cả máy A và máy B).
+CONNECT_URL ?=
 export ENV_FILE CONNECT_URL
 COMPOSE_HQ = docker compose --env-file $(ENV_FILE) -f infra/compose.hq.yml
 COMPOSE_DC = docker compose --env-file $(ENV_FILE) -f infra/compose.dc.yml
@@ -82,6 +83,35 @@ reset:
 	$(MAKE) --no-print-directory seed
 	@echo "== reset xong. Kiem tra: bash infra/scripts/verify.sh"
 
+# ---- Khởi tạo lại trên hai máy (F12): máy B chạy reset-dc TRƯỚC, xong máy A chạy reset-hq ------
+reset-dc:
+	@echo "== reset-dc 1/3 (may B): down -v compose kho"
+	$(COMPOSE_DC) down -v
+	@echo "== reset-dc 2/3: up-dc"
+	$(MAKE) --no-print-directory up-dc
+	@echo "== reset-dc 3/3: cho pg-dc1..3 healthy"
+	bash infra/scripts/wait-healthy.sh pg-dc1 pg-dc2 pg-dc3
+	@echo "== reset-dc xong. Tiep theo: may A chay make reset-hq"
+
+reset-hq:
+	@echo "== reset-hq 1/8 (may A): kiem tra 3 kho vua reset-dc (chua co subscription cu)"
+	bash infra/scripts/expect-fresh-dc.sh
+	@echo "== reset-hq 2/8: down -v compose HQ"
+	$(COMPOSE_HQ) down -v
+	@echo "== reset-hq 3/8: up-hq"
+	$(MAKE) --no-print-directory up-hq
+	@echo "== reset-hq 4/8: cho pg-hq, kafka, kafka-connect healthy va pg-dc1..3 tra loi qua mang"
+	bash infra/scripts/wait-healthy.sh
+	@echo "== reset-hq 5/8: logical replication danh muc"
+	bash infra/scripts/setup-replication.sh
+	@echo "== reset-hq 6/8: postgres_fdw, v_inventory_all"
+	bash infra/scripts/setup-fdw.sh
+	@echo "== reset-hq 7/8: connector Debezium"
+	bash infra/scripts/register-connectors.sh
+	@echo "== reset-hq 8/8: seed"
+	$(MAKE) --no-print-directory seed
+	@echo "== reset-hq xong. Kiem tra: make preflight"
+
 seed:
 	bash scripts/seed.sh
 
@@ -121,9 +151,16 @@ race-unsafe:
 check-invariant:
 	@P=$(P) bash scripts/check-invariant.sh
 
-# Máy A: gọi lại /replay kho Trung với REQ_KB3_IN, REQ_KB3_OUT; phải trả duplicate (KB3 bước 12).
+# Máy A hoặc B: gọi lại /replay kho Trung với request_id của các giao dịch ghi hộ đã APPLIED;
+# phải trả duplicate, tồn không đổi (KB3 bước 12).
 replay-again:
 	bash scripts/replay-again.sh
+
+# Máy A hoặc B, chỉ đọc: kiểm tra trước giờ demo (IP, 3 kho ONLINE, connector, dòng trạng thái).
+# Bước khác KB1-0: make preflight STEP=KB2-1
+STEP ?= KB1-0
+preflight:
+	python scripts/preflight.py $(STEP)
 
 # M1 (docs/tests.md mục 5), máy A: make bench-cdc ARGS="DC=2 COUNT=200 OUT=m1.json"
 bench-cdc:

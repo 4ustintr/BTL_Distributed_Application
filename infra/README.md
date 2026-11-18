@@ -68,16 +68,18 @@ xóa rồi tạo lại (offset và slot `debezium_dcN` giữ nguyên nên không
 | `make up-hq` | A | pg-hq, kafka, kafka-connect, kafka-ui, hq-api, dashboard (build hq-api) |
 | `make up-dc` | B | pg-dc1..3, node-api-dc1..3, wms-dc1..3 (build node-api) |
 | `make down-hq`, `make down-dc` | A, B | Dừng và xóa container, **giữ volume** |
-| `make reset` | cả hai | Xóa sạch và dựng lại theo bảng trên |
-| `make seed` | A | Ghi danh mục vào hq_db (mục 2 của `docs/tests.md`): dc 1..3 (`srv_dc1..3`), `CAT-BEV`, `SKU-A` 12.5 kg; tạo 3 dòng `dc_status` ở RECOVERING (`node_mode` RECOVERING, `missed_count` 0; Health Monitor chỉ UPDATE; chạy lại seed không ghi đè dòng đã có); đặt lại sequence IDENTITY. **TODO**: nhập tồn Bắc 100 / Trung 40 / Nam 10 qua `POST /inbound` (REQ_SEED_1..3) khi Node API ONLINE |
+| `make reset` | một máy | Xóa sạch và dựng lại theo bảng trên (mọi container trên cùng một Docker) |
+| `make reset-dc`, `make reset-hq` | B rồi A | Như `make reset` nhưng tách cho hai máy, xem mục 6 |
+| `make seed` | A | Ghi danh mục vào hq_db (mục 2 của `docs/tests.md`): dc 1..3 (`srv_dc1..3`), `CAT-BEV`, `SKU-A` 12.5 kg; tạo 3 dòng `dc_status` ở RECOVERING (`node_mode` RECOVERING, `missed_count` 0; Health Monitor chỉ UPDATE; chạy lại seed không ghi đè dòng đã có); đặt lại sequence IDENTITY; chờ 3 kho ONLINE rồi nhập tồn Bắc 100 / Trung 40 / Nam 10 qua `POST /inbound` (REQ_SEED_1..3) |
 | `make kill-dc2`, `make start-dc2` | B | `docker kill` / `docker start` pg-dc2 và node-api-dc2 |
 | `make pause-dc2`, `make unpause-dc2` | B | `docker pause` / `docker unpause` pg-dc2 và node-api-dc2 |
-| `make restart-connector-dc2` | A | `POST /connectors/dc2-outbox/restart?includeTasks=true&onlyFailed=true` (F4), chờ RUNNING tối đa 60 giây |
+| `make restart-connector-dc2` | A hoặc B | Chờ pg-dc2 nhận kết nối, rồi `POST /connectors/dc2-outbox/restart?includeTasks=true&onlyFailed=true` (F4), chờ RUNNING tối đa 60 giây |
+| `make preflight [STEP=KB1-0]` | A hoặc B | Chỉ đọc: IP trong `.env`, 3 kho ONLINE, connector, dòng trạng thái so với bảng chuẩn |
 | `make ps` | | Trạng thái container của cả hai file compose |
 | `make logs [S=hq-api] [N=200]` | | Log (mặc định mọi service, 100 dòng cuối) |
 
-Dùng file env khác: `make reset ENV_FILE=duong/dan/khac.env`. Kafka Connect ở chỗ khác:
-`CONNECT_URL=http://HOST_A_IP:8083` (mặc định `http://localhost:8083`).
+Dùng file env khác: `make reset ENV_FILE=duong/dan/khac.env`. Kafka Connect mặc định ở
+`http://HOST_A_IP:8083` (chạy được từ cả hai máy); đổi bằng `CONNECT_URL=...`.
 
 Volume trống thì postgres chạy `postgres/init-hq.sh` hoặc `postgres/init-dc.sh` (tạo CSDL, chạy
 migration, đặt mật khẩu role). Volume đã có dữ liệu thì script **không chạy lại**; muốn khởi tạo lại
@@ -199,7 +201,65 @@ máy host (pytest, bench-cdc) dùng `localhost:29092` hoặc `HOST_A_IP:29092`.
 | `$'\r': command not found` | Script bị đổi sang CRLF. `.gitattributes` ở gốc repo buộc `*.sh` dùng LF; chạy `git add --renormalize . && git checkout -- infra scripts` |
 | `docker exec ... /opt/...: no such file` trong Git Bash | Git Bash đổi `/opt/...` thành `C:/Program Files/Git/opt/...`. Thêm `MSYS_NO_PATHCONV=1` trước lệnh `docker` (script đã tự làm) |
 | Subscription trên kho đã có nhưng không nhận dữ liệu sau khi chỉ xóa volume HQ | Slot `sub_master_dcN` trên HQ mất. Không xóa volume riêng lẻ; dùng `make reset` |
-| `make seed` không có tồn kho | Đúng như hiện tại: bước nhập tồn qua API là TODO, chờ Node API (mục 2) |
+| `make seed` dừng ở "cho ca 3 kho ONLINE" | HQ không gọi được kho (IP sai, tường lửa) hoặc kho kẹt RECOVERING; chạy `make preflight` để xem kho nào và cách xử lý |
+| `reset-hq` báo "con subscription cu" | Máy B chưa chạy `make reset-dc` (hoặc chạy sau máy A). Chạy `make reset-dc` trên máy B rồi `make reset-hq` trên máy A |
 
 Ghi chú Windows khác: script khởi tạo chạy được dù file mount vào không có quyền thực thi (entrypoint
 postgres `source` file; nginx gọi qua `sh`). Cổng 5432, 3000, 8000, 8080... phải trống.
+
+## 6. Chạy trên hai máy (máy A: HQ, máy B: 3 kho)
+
+Script trong `infra/scripts/` tự nhận biết container PostgreSQL nằm ở máy nào: có trên Docker của
+máy đang chạy thì `docker exec`, không có thì nối qua mạng (`HOST_A_IP:5432`, `HOST_B_IP:5433..5435`)
+bằng `psql` của một container PostgreSQL tại chỗ. Kafka Connect mặc định ở `HOST_A_IP:8083`. Nhờ vậy
+mọi lệnh demo trừ `kill/start/pause-dc2` (máy B) và `docker stop hq-api` (máy A) chạy được từ máy nào
+cũng được. Đã kiểm đường qua mạng trên một máy (HOST_A_IP = HOST_B_IP = IP LAN); **chưa chạy trên hai
+máy thật**.
+
+### 6.1. Chuẩn bị (một lần)
+
+1. Hai máy cùng một router hoặc hotspot riêng; đặt IP tĩnh (hoặc giữ DHCP reservation). Trong
+   Windows, đặt mạng là **Private** (Settings → Network → Properties → Network profile type).
+2. `.env` **giống hệt nhau** trên hai máy: `HOST_A_IP` = IP máy A, `HOST_B_IP` = IP máy B, cùng
+   `INTERNAL_KEY`, `POSTGRES_PASSWORD`.
+3. Mở cổng tường lửa, chạy trong **PowerShell quyền Administrator**:
+
+   ```powershell
+   # Máy A
+   netsh advfirewall firewall add rule name="BTL HQ" dir=in action=allow protocol=TCP localport=5432,8000,8080,8083,9092,29092,3000
+   # Máy B
+   netsh advfirewall firewall add rule name="BTL Kho" dir=in action=allow protocol=TCP localport=5433-5435,8001-8003,3001-3003
+   ```
+
+4. Kiểm tra thông mạng từ máy A tới máy B và ngược lại (Git Bash):
+
+   ```bash
+   curl -s http://HOST_B_IP:8001/health      # trên máy A, sau khi máy B đã make up-dc
+   curl -s http://HOST_A_IP:8000/health      # trên máy B, sau khi máy A đã make up-hq
+   ```
+
+### 6.2. Dựng lại toàn bộ (thay cho `make reset`)
+
+```bash
+# 1) Máy B, chạy TRƯỚC: xóa và dựng lại 3 kho
+make reset-dc
+# 2) Máy A, chạy SAU: xóa và dựng lại HQ, replication, FDW, connector, seed
+make reset-hq
+# 3) Máy nào cũng được
+make preflight
+```
+
+`reset-hq` kiểm tra trước rằng 3 kho vừa được `reset-dc` (chưa có subscription cũ); sai thứ tự thì
+dừng ngay và báo. Không chạy `make reset` khi hai máy khác nhau: lệnh đó chỉ dành cho một máy.
+
+### 6.3. Lệnh trong lúc demo
+
+| Lệnh | Chạy ở |
+|---|---|
+| `make race`, `make race-unsafe`, `make kill-dc2`, `make start-dc2`, `make pause-dc2`, `make unpause-dc2` | Máy B |
+| `docker stop/start hq-api hq-consumer` (kịch bản dự phòng) | Máy A |
+| `make restart-connector-dc2`, `make check-invariant`, `make replay-again`, `make preflight`, `python scripts/status_line.py ...` | Máy A hoặc B |
+
+Gợi ý: người điều khiển ngồi ở máy B, giữ một terminal Git Bash cho mọi lệnh của Kịch bản 1–3;
+chỉ kịch bản dự phòng cần thao tác ở máy A. `bash infra/scripts/verify.sh` (mục a–d) chạy ở máy A;
+`--failover` chỉ dùng khi một máy. Test tích hợp (`make test`) tự bỏ qua khi HOST_A_IP khác HOST_B_IP.

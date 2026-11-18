@@ -4,11 +4,16 @@
 #
 # Biến môi trường tùy chọn:
 #   ENV_FILE     file env, tương đối với gốc repo (mặc định .env); Makefile tự export.
-#   CONNECT_URL  REST của Kafka Connect (mặc định http://localhost:8083).
+#   CONNECT_URL  REST của Kafka Connect (mặc định http://HOST_A_IP:8083, đặt trong load_env),
+#                nên lệnh connector chạy được từ cả máy A lẫn máy B.
+#
+# Hai máy (F2): container PostgreSQL không có trên máy đang chạy script thì psql_in, psql_val,
+# container_state tự đi qua mạng (HOST_A_IP:5432 cho pg-hq, HOST_B_IP:5433..5435 cho pg-dc1..3),
+# dùng psql có sẵn trong một container PostgreSQL của máy này. Một máy thì vẫn docker exec như cũ.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_FILE="${ENV_FILE:-.env}"
-CONNECT_URL="${CONNECT_URL:-http://localhost:8083}"
+CONNECT_URL="${CONNECT_URL:-}"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[1]:-$0}" .sh)"
 # Git Bash đổi tham số dạng /duong/dan thành C:/... khi gọi chương trình Windows. Chỉ tắt cho docker
 # (đường dẫn nằm trong container); curl vẫn cần đổi /dev/null nên không export toàn cục.
@@ -69,18 +74,57 @@ load_env() {
   for v in HOST_A_IP HOST_B_IP POSTGRES_PASSWORD; do
     [ -n "${!v:-}" ] || die "thieu bien $v trong $f"
   done
+  CONNECT_URL="${CONNECT_URL:-http://${HOST_A_IP}:8083}"
+  export CONNECT_URL
+}
+
+# ---- PostgreSQL ở máy này hoặc máy kia --------------------------------------------------------
+PG_CONTAINERS=(pg-hq pg-dc1 pg-dc2 pg-dc3)
+
+# is_local <container>: container có trên Docker của máy này (đang chạy hay đã dừng đều tính).
+is_local() { dk inspect "$1" >/dev/null 2>&1; }
+
+# pg_addr <container>: "host port" theo F2, dùng khi container nằm ở máy kia.
+pg_addr() {
+  case "$1" in
+    pg-hq) echo "${HOST_A_IP} 5432" ;;
+    pg-dc[1-3]) echo "${HOST_B_IP} $((5432 + ${1#pg-dc}))" ;;
+    *) return 1 ;;
+  esac
+}
+
+# pg_client: một container PostgreSQL đang chạy trên máy này, dùng psql của nó để nối qua mạng.
+pg_client() {
+  local c
+  for c in "${PG_CONTAINERS[@]}"; do
+    [ "$(dk inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" = true ] && { echo "$c"; return 0; }
+  done
+  die "may nay khong co container PostgreSQL nao dang chay de noi toi may kia (make up-hq hoac make up-dc truoc)"
+}
+
+# _psql <container> <user> [tham số psql...]: psql tại chỗ (socket) hoặc qua mạng (mật khẩu).
+_psql() {
+  local c="$1" user="$2" host port
+  shift 2
+  if is_local "$c"; then
+    dk exec -i "$c" psql -U "$user" "$@"
+  else
+    read -r host port <<<"$(pg_addr "$c")" || die "khong biet dia chi cua ${c}"
+    dk exec -i -e PGPASSWORD="$POSTGRES_PASSWORD" -e PGCONNECT_TIMEOUT=5 "$(pg_client)" \
+      psql -h "$host" -p "$port" -U "$user" "$@"
+  fi
 }
 
 # psql_in <container> <db> [tham số psql...]: chạy SQL đọc từ stdin bằng user postgres.
 psql_in() {
   local c="$1" db="$2"
   shift 2
-  dk exec -i "$c" psql -v ON_ERROR_STOP=1 --no-psqlrc -q -U postgres -d "$db" "$@"
+  _psql "$c" postgres -v ON_ERROR_STOP=1 --no-psqlrc -q -d "$db" "$@"
 }
 
 # psql_val <container> <db> <sql> [user]: in kết quả không định dạng (một giá trị mỗi dòng).
 psql_val() {
-  dk exec "$1" psql -v ON_ERROR_STOP=1 --no-psqlrc -qtAX -U "${4:-postgres}" -d "$2" -c "$3"
+  _psql "$1" "${4:-postgres}" -v ON_ERROR_STOP=1 --no-psqlrc -qtAX -d "$2" -c "$3" </dev/null
 }
 
 # Thoát ký tự đặc biệt cho vế thay thế của sed (dấu phân cách là |).
@@ -95,9 +139,21 @@ conninfo_quote() {
 }
 
 # container_state <container>: healthy | unhealthy | starting | running | exited | paused | missing
+# PostgreSQL ở máy kia: healthy nếu pg_isready qua mạng trả lời, ngược lại missing.
 container_state() {
-  dk inspect -f '{{if .State.Paused}}paused{{else if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
-    "$1" 2>/dev/null || echo missing
+  local host port
+  if is_local "$1"; then
+    dk inspect -f '{{if .State.Paused}}paused{{else if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+      "$1" 2>/dev/null || echo missing
+  elif read -r host port <<<"$(pg_addr "$1" 2>/dev/null)" && [ -n "${host:-}" ]; then
+    if dk exec "$(pg_client)" pg_isready -q -h "$host" -p "$port" -t 3 >/dev/null 2>&1; then
+      echo healthy
+    else
+      echo missing
+    fi
+  else
+    echo missing
+  fi
 }
 
 # wait_healthy <giây> <container>...: chờ từng container healthy, quá hạn thì die.
