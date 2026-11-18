@@ -82,11 +82,11 @@ sequenceDiagram
   H->>H: khả dụng tạm tính 65 >= 10, ghi pending_txn
   Note over T: docker start, chế độ RECOVERING
   H->>T: GET /health -> RECOVERING
-  H->>T: POST /replay (nhập 30)
-  T->>C: InventoryChanged, request_id 1
-  H->>T: POST /replay (xuất 10)
-  T->>C: InventoryChanged, request_id 2
-  C->>H: snapshot 35 -> 65 -> 55, pending APPLIED
+  H->>T: POST /replay (nhập 30, xuất 10)
+  H->>T: gửi lại lần 2 -> duplicate, pending APPLIED
   H->>T: POST /recovery/complete
   T-->>W: ONLINE, WMS quay về Node API
+  Note over C: make restart-connector-dc2
+  T->>C: InventoryChanged (2 sự kiện)
+  C->>H: snapshot 35 -> 65 -> 55
 ```

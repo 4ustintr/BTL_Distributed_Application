@@ -10,7 +10,7 @@ Bất biến chỉ được kiểm tra sau khi mỗi bước hoàn tất: FDW đ
 
 ## Chuẩn bị trước demo
 
-- [ ] Chạy make reset theo đúng thứ tự ở F12 (máy A, máy B, connector, seed); make seed chờ 3 kho ONLINE rồi mới nhập Bắc 100, Trung 40, Nam 10 qua API.  
+- [ ] Chạy make reset (một máy), hoặc make reset-dc trên máy B rồi make reset-hq trên máy A (hai máy), theo F12; make seed chờ 3 kho ONLINE rồi mới nhập Bắc 100, Trung 40, Nam 10 qua API. Sau đó chạy make preflight: mọi mục ĐẠT.  
 - [ ] Kafka Connect: 3 connector dc1-outbox, dc2-outbox, dc3-outbox đều RUNNING.  
 - [ ] Dashboard: 3 kho ONLINE, số trên snapshot khớp với số khi bấm Đối soát.  
 - [ ] make check-invariant trả DIFF \= 0 và dòng trạng thái khớp bước KB1-0 ở thẻ Kiểm thử và đánh giá.  
@@ -124,12 +124,12 @@ Trong lúc máy chủ kho Trung còn hỏng, xe của nhà cung cấp tới và 
 4. Xuất 10 thùng: HQ tính khả dụng tạm tính 35 \+ 30 \= 65 ≥ 10, rồi ghi pending\_txn bằng INSERT … ON CONFLICT (txn\_id) DO NOTHING. ON CONFLICT giúp WMS gửi lại cùng request\_id không bị ghi hai lần.  
 5. Xuất 100 thùng: HQ từ chối ngay vì 65 − 10 \= 55 \< 100\.  
 6. Dashboard: kho Trung hiện 55 (tạm tính), bằng snapshot 35 cộng 2 giao dịch đang chờ.  
-7. Kho lên lại: chạy docker start pg-dc2 node-api-dc2. PostgreSQL tự phục hồi từ WAL, dữ liệu đã commit trước khi sập còn nguyên (35). Node API khởi động ở trạng thái RECOVERING: từ chối mọi giao dịch từ WMS (503 DC\_RECOVERING, "kho đang đồng bộ") nhưng nhận /replay từ HQ. Health Monitor thấy kho Trung trả lời lại với node\_mode \= RECOVERING nên chuyển dc\_status sang RECOVERING và ngừng nhận failover cho kho này, nhờ vậy không có giao dịch mới nào chen vào giữa lúc đang đẩy lại. Subscription danh mục tự kết nối lại.  
-8. Khởi động lại connector: POST /connectors/dc2-outbox/restart?includeTasks=true\&onlyFailed=true. Connector RUNNING trở lại và đọc tiếp từ replication slot.  
-9. Đẩy lại giao dịch: Replay Worker lấy các pending\_txn của kho Trung đang PENDING theo thứ tự created\_at, gửi từng dòng tới POST /replay. Kho trả 200 thì gửi dòng kế tiếp (dòng chưa APPLIED sẽ được gửi lại ở vòng sau, an toàn vì kho chặn trùng theo request\_id); kho trả 422 (hoặc 400 khi dữ liệu lệnh sai) thì HQ đánh dấu REJECTED kèm lý do; lỗi mạng thì dừng, thử lại sau 2 giây và không nhảy sang dòng sau, để giữ đúng thứ tự. Ở kho, lệnh replay chạy đúng quy trình nhập/xuất thường với ref\_type REPLAY và request\_id \= txn\_id; lệnh bị từ chối thì rollback toàn bộ, không để lại dòng sổ nào.  
-10. Khép vòng: CDC đưa sự kiện về HQ. Consumer thấy request\_id thì chuyển pending\_txn sang APPLIED trong cùng transaction với việc cập nhật snapshot, nên Dashboard không cộng hai lần hay tụt số. Dashboard đổi từ "55 (tạm tính)" thành 55\.  
-11. Chuyển về bình thường: khi kho Trung không còn giao dịch PENDING, Replay Worker gọi POST /recovery/complete. Kho chuyển ONLINE; /recovery/complete trả 200 thì Replay Worker chuyển dc\_status sang ONLINE. WMS thấy mode \= ONLINE ở lần health check kế tiếp và quay lại gọi Node API của kho.  
-12. Kiểm tra chống trùng: chạy make replay-again. Script gọi thẳng POST /replay của kho Trung với 2 request\_id cũ (Replay Worker không tự gửi lại dòng đã APPLIED). Kho trả 200 kèm duplicate: true; tồn vẫn 55\.  
+7. Kho lên lại: chạy docker start pg-dc2 node-api-dc2. PostgreSQL tự phục hồi từ WAL, dữ liệu đã commit trước khi sập còn nguyên (35). Node API khởi động ở trạng thái RECOVERING: từ chối mọi giao dịch từ WMS (503 DC\_RECOVERING, "kho đang đồng bộ") nhưng nhận /replay từ HQ. Health Monitor thấy kho Trung trả lời lại với node\_mode \= RECOVERING nên chuyển dc\_status sang RECOVERING và ngừng nhận failover cho kho này, nhờ vậy không có giao dịch mới nào chen vào giữa lúc đang đẩy lại. Subscription danh mục tự kết nối lại. Replay Worker bắt đầu đẩy lại ngay (bước 9), nên chạy bước 8 ngay sau bước này.  
+8. Khởi động lại connector: chạy make restart-connector-dc2 ngay sau bước 7; script chờ pg-dc2 nhận kết nối rồi gọi POST /connectors/dc2-outbox/restart?includeTasks=true\&onlyFailed=true. Connector RUNNING trở lại và đọc tiếp từ replication slot.  
+9. Đẩy lại giao dịch: Replay Worker lấy các pending\_txn của kho Trung đang PENDING theo thứ tự created\_at, gửi từng dòng tới POST /replay. Kho trả 200 thì gửi dòng kế tiếp; dòng chưa APPLIED được gửi lại ở vòng sau (2 giây), lúc đó kho trả duplicate: true nên HQ chuyển thẳng APPLIED (F10.i bước 2), không phải chờ sự kiện CDC; kho trả 422 (hoặc 400 khi dữ liệu lệnh sai) thì HQ đánh dấu REJECTED kèm lý do; lỗi mạng thì dừng, thử lại sau 2 giây và không nhảy sang dòng sau, để giữ đúng thứ tự. Ở kho, lệnh replay chạy đúng quy trình nhập/xuất thường với ref\_type REPLAY và request\_id \= txn\_id; lệnh bị từ chối thì rollback toàn bộ, không để lại dòng sổ nào.  
+10. Khép vòng: sau bước 8, CDC đưa sự kiện về HQ. Consumer cập nhật snapshot theo version; dòng pending\_txn nào còn PENDING thì Consumer chuyển APPLIED trong cùng transaction, dòng đã APPLIED ở bước 9 thì giữ nguyên, nên Dashboard không cộng hai lần hay tụt số. Bản tổng hợp của kho Trung thành 55\.  
+11. Chuyển về bình thường: khi kho Trung không còn giao dịch PENDING, Replay Worker gọi POST /recovery/complete. Kho chuyển ONLINE; /recovery/complete trả 200 thì Replay Worker chuyển dc\_status sang ONLINE. WMS thấy mode \= ONLINE ở lần health check kế tiếp và quay lại gọi Node API của kho. Vì bước 9 đã chuyển cả hai dòng sang APPLIED, việc này xảy ra chỉ khoảng 4–5 giây sau bước 7, có thể trước khi sự kiện CDC về; trong khoảng đó Dashboard hiện kho Trung ONLINE với bản tổng hợp cũ (35, kèm thời điểm cập nhật cũ) cho tới khi bước 8 và 10 xong.  
+12. Kiểm tra chống trùng: chạy make replay-again. Script lấy request\_id của các pending\_txn kho Trung đã APPLIED (chính các lệnh nhân viên gửi qua WMS ở bước 3–4) và gọi thẳng POST /replay của kho Trung với các mã đó (Replay Worker không tự gửi lại dòng đã APPLIED). Kho trả 200 kèm duplicate: true; tồn vẫn 55\.  
 13. Đối soát: FDW tới kho Trung ra 55, khớp với snapshot; điều này cũng xác nhận snapshot 35 ở Kịch bản 2 là đúng. Chạy make check-invariant: tồn 135 \+ đi đường 0 \+ đã xuất 45 \= đã nhập 180\.
 
 ### Kết quả mong đợi
@@ -138,8 +138,9 @@ Trong lúc máy chủ kho Trung còn hỏng, xe của nhà cung cấp tới và 
 | :---- | :---- | :---- | :---- | :---- |
 | Lúc sập | 35 | 35 (offline) | 0 | OFFLINE |
 | Sau bước 5 | không truy cập được | 55 (tạm tính) | 2 PENDING | OFFLINE |
-| Sau bước 7 | 35 | 55 (tạm tính) | 2 PENDING | RECOVERING |
-| Sau bước 11 | 55 | 55 | 2 APPLIED | ONLINE |
+| Ngay sau bước 7 | 35 | 55 (tạm tính) | 2 PENDING | RECOVERING |
+| Khoảng 5 giây sau bước 7, bước 8 chưa xong | 55 | 35 (bản tổng hợp cũ) | 2 APPLIED | ONLINE |
+| Sau bước 8 và 10 | 55 | 55 | 2 APPLIED | ONLINE |
 
 * Bất biến cuối: 20 \+ 55 \+ 60 \= 135 thùng tồn, cộng 45 thùng đã xuất cho khách (30 \+ 5 \+ 10\) bằng 180, đúng bằng 150 ban đầu cộng 30 thùng mới nhập.  
 * Giao dịch phát sinh trong lúc sập không bị mất; gửi lại nhiều lần không bị ghi trùng.  

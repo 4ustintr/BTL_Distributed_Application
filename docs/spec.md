@@ -405,12 +405,15 @@ Dữ liệu danh mục ghi thẳng vào hq\_db bằng script seed; tồn kho nh�
 | Lệnh | Chạy trên | Việc làm |
 | :---- | :---- | :---- |
 | make up-hq, make up-dc | Máy A, máy B | Dựng các container của máy đó |
-| make reset | Cả hai máy | Thứ tự cố định: máy A trước (hq\_db, Kafka, Kafka Connect, HQ API), rồi máy B (3 kho và subscription), rồi tạo 3 connector, cuối cùng make seed. Mỗi máy chạy docker compose down \-v rồi dựng lại. Phải xóa cả volume Kafka: nếu chỉ xóa CSDL, Consumer sẽ áp dụng lại sự kiện cũ còn trong topic vì processed\_event đã bị xóa |
+| make reset | Một máy (HOST\_A\_IP \= HOST\_B\_IP) | Thứ tự cố định: docker compose down \-v cả hai phía, dựng phần máy A (hq\_db, Kafka, Kafka Connect, HQ API), dựng phần máy B (3 kho), tạo subscription, FDW, 3 connector, cuối cùng make seed. Phải xóa cả volume Kafka: nếu chỉ xóa CSDL, Consumer sẽ áp dụng lại sự kiện cũ còn trong topic vì processed\_event đã bị xóa |
+| make reset-dc | Máy B, chạy trước make reset-hq | docker compose down \-v rồi dựng lại 3 kho, chờ pg-dc1..3 healthy |
+| make reset-hq | Máy A, sau make reset-dc | Kiểm tra 3 kho chưa có subscription cũ; docker compose down \-v rồi dựng lại máy A; tạo subscription (nối qua mạng tới pg-dc), FDW, 3 connector; make seed. Xóa volume Kafka cùng lý do như make reset |
 | make seed | Máy A | Ghi danh mục; tạo 3 dòng dc\_status ở trạng thái RECOVERING; chờ GET /dc-status báo cả 3 kho ONLINE (kho khởi động ở RECOVERING và từ chối lệnh nhập từ WMS cho tới khi Replay Worker gọi /recovery/complete); rồi gọi API nhập tồn ban đầu |
 | make race, make race-unsafe | Máy B | Bắn 2 lệnh xuất 30 thùng cùng lúc vào kho Bắc; bản unsafe khởi động lại node-api-dc1 với LOCK\_MODE=none |
 | make check-invariant | Máy A | Gọi GET /invariant, in 4 số và chênh lệch |
 | make pause-dc2, unpause-dc2, kill-dc2, start-dc2 | Máy B | Tạo sự cố cho kho Trung |
-| make restart-connector-dc2 | Máy A | Gọi REST restart connector dc2-outbox |
-| make replay-again | Máy A | Gọi thẳng /replay của kho Trung với 2 request\_id cũ |
+| make restart-connector-dc2 | Máy A hoặc B | Chờ pg-dc2 nhận kết nối rồi gọi REST restart connector dc2-outbox (Kafka Connect ở HOST\_A\_IP:8083) |
+| make replay-again | Máy A hoặc B | Gọi thẳng /replay của kho Trung với request\_id của các pending\_txn kho Trung đã APPLIED; kho phải trả duplicate |
+| make preflight | Máy A hoặc B | Chỉ đọc: IP trong .env thuộc máy này, HQ và 3 kho ONLINE, không còn pending\_txn PENDING, 3 connector RUNNING, dòng trạng thái khớp bước (mặc định KB1-0) |
 | make bench-cdc | Máy A | Đo độ trễ CDC (thẻ Kiểm thử và đánh giá) |
 | make test | Máy A | Chạy 10 test bắt buộc; make test-all chạy cả test tùy chọn |

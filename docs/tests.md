@@ -23,7 +23,7 @@ Mọi script demo và test dùng chung các mã dưới đây, nên log, Dashboa
 | Phiếu 2 | TR-2026-000002, Bắc → Trung, 10 thùng | KB1 bước 5, TC07 |
 | Hai lệnh tranh chấp | REQ\_RACE\_1, REQ\_RACE\_2: mỗi lệnh xuất 30 thùng ở kho Bắc | KB1 bước 2, TC03, TC04 (tùy chọn) |
 | Xuất cho đại lý ở kho Trung | REQ\_KB2\_OUT: xuất 5 thùng | KB2 bước 1 |
-| Ghi hộ ở kho Trung | REQ\_KB3\_IN (nhập 30), REQ\_KB3\_OUT (xuất 10), REQ\_KB3\_OUT\_BIG (xuất 100\) | KB3 bước 3–5, make replay-again |
+| Ghi hộ ở kho Trung | REQ\_KB3\_IN (nhập 30), REQ\_KB3\_OUT (xuất 10), REQ\_KB3\_OUT\_BIG (xuất 100\) | Test ghi hộ (test\_failover, TC14). Khi demo trên WMS, WMS tự sinh request\_id cho KB3 bước 3–5; make replay-again lấy request\_id thật từ các pending\_txn APPLIED của kho Trung |
 | Replay bị từ chối ở kho Trung | REQ\_TC16\_OUT\_LOCAL (kho Trung tự xuất 30), REQ\_TC16\_OUT\_FAILOVER (ghi hộ xuất 30\) | TC16 |
 | Giá trị của các REQ\_\* | UUID cố định, khai báo một lần trong scripts/demo\_ids.env và tests/fixtures.py | Script demo, test, Dashboard |
 
