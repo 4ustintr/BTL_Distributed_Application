@@ -3,55 +3,101 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#11291f">
   <title>WMS kho</title>
-  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/style.css?v=3">
   <script src="config.js"></script>
+  <!-- Chỉ phục vụ trình bày: gắn mã kho lên <html> để CSS tô màu nhấn riêng cho từng kho. -->
+  <script>try { document.documentElement.dataset.dc = String(window.CONFIG.DC_ID); } catch (e) {}</script>
 </head>
 <body>
-  <header>
-    <h1>WMS kho <span id="dc-name">?</span></h1>
-    <div class="status">
-      <span id="mode" class="badge badge-unknown" title="Chế độ của Node API">chưa rõ</span>
-      <button type="button" id="refresh">Làm mới</button>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 4l9 6.5"/><path d="M5 9.5V20h14V9.5"/><path d="M9 20v-6h6v6"/></svg>
+        </span>
+        <div>
+          <p class="brand-eyebrow">WMS · QUẢN LÝ KHO</p>
+          <h1>Kho <span id="dc-name">?</span></h1>
+        </div>
+      </div>
+      <div class="status">
+        <span id="mode" class="badge badge-unknown" title="Chế độ của Node API">chưa rõ</span>
+        <button type="button" id="refresh" class="button ghost">
+          <svg aria-hidden="true" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
+          Làm mới
+        </button>
+      </div>
     </div>
   </header>
 
   <main>
     <p id="notice" class="notice" role="status" hidden></p>
 
-    <section aria-labelledby="h-stock">
-      <h2 id="h-stock">Tồn kho</h2>
-      <table>
-        <thead>
-          <tr><th>Mã hàng</th><th>Tồn</th><th>Đã giữ</th><th>Khả dụng</th><th>Version</th></tr>
-        </thead>
-        <tbody id="stock-rows"><tr><td colspan="5">Đang tải…</td></tr></tbody>
-      </table>
+    <section class="card" aria-labelledby="h-stock">
+      <div class="card-heading">
+        <h2 id="h-stock">Tồn kho</h2>
+        <span class="card-hint">Tự cập nhật mỗi 3 giây</span>
+      </div>
+      <div class="table-wrap">
+        <table class="stock-table">
+          <thead>
+            <tr><th>Mã hàng</th><th>Tồn</th><th>Đã giữ</th><th>Khả dụng</th><th>Version</th></tr>
+          </thead>
+          <tbody id="stock-rows"><tr><td colspan="5">Đang tải…</td></tr></tbody>
+        </table>
+      </div>
     </section>
 
-    <section aria-labelledby="h-move">
-      <h2 id="h-move">Nhập, xuất hàng</h2>
+    <section class="card move-card" aria-labelledby="h-move">
+      <div class="card-heading">
+        <h2 id="h-move">Nhập, xuất hàng</h2>
+        <span class="route-hint" aria-hidden="true"></span>
+      </div>
       <form id="stock-form" novalidate>
         <label>Mã hàng <input id="product-id" inputmode="numeric" value="1" required></label>
         <label>Số lượng (thùng) <input id="qty" inputmode="numeric" value="1" required></label>
         <label>Người thao tác <input id="created-by" maxlength="50" required></label>
         <div class="actions">
-          <button type="submit" id="btn-inbound" data-kind="inbound">Nhập hàng</button>
-          <button type="submit" id="btn-outbound" data-kind="outbound">Xuất hàng</button>
+          <button type="submit" id="btn-inbound" class="button" data-kind="inbound">
+            <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12"/><path d="m6 10 6 6 6-6"/><path d="M4 20h16"/></svg>
+            Nhập hàng
+          </button>
+          <button type="submit" id="btn-outbound" class="button dark" data-kind="outbound">
+            <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m6 10 6-6 6 6"/><path d="M4 20h16"/></svg>
+            Xuất hàng
+          </button>
         </div>
       </form>
       <p id="result" class="result" role="status"></p>
     </section>
 
-    <section aria-labelledby="h-transfer">
-      <h2 id="h-transfer">Phiếu điều chuyển</h2>
-      <h3>Cần xuất hàng</h3>
-      <ul id="to-ship" class="transfers"></ul>
-      <h3>Cần nhận hàng</h3>
-      <ul id="to-receive" class="transfers"></ul>
-      <h3>Phiếu đến, chưa xuất (có thể từ chối)</h3>
-      <ul id="to-decline" class="transfers"></ul>
+    <section class="card" aria-labelledby="h-transfer">
+      <div class="card-heading">
+        <h2 id="h-transfer">Phiếu điều chuyển</h2>
+        <span class="card-hint">Do HQ điều phối</span>
+      </div>
+      <div class="transfer-groups">
+        <div class="transfer-group group-ship">
+          <h3>Cần xuất hàng</h3>
+          <ul id="to-ship" class="transfers"></ul>
+        </div>
+        <div class="transfer-group group-receive">
+          <h3>Cần nhận hàng</h3>
+          <ul id="to-receive" class="transfers"></ul>
+        </div>
+        <div class="transfer-group group-decline">
+          <h3>Phiếu đến, chưa xuất (có thể từ chối)</h3>
+          <ul id="to-decline" class="transfers"></ul>
+        </div>
+      </div>
     </section>
+
+    <footer>
+      <span class="footer-brand">WMS / HỆ THỐNG QUẢN LÝ KHO PHÂN TÁN</span>
+      <span>Mất kết nối kho thì nhập, xuất tự chuyển sang HQ ghi hộ</span>
+    </footer>
   </main>
 
   <script src="js/logic.js"></script>
