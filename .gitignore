@@ -7,3 +7,5 @@ __pycache__/
 .claude/settings.local.json
 .DS_Store
 *.log
+# Tài liệu Word sinh ra để gửi riêng (nặng, nhị phân), không đưa vào repo
+*.docx
