@@ -144,7 +144,7 @@ Trạng thái hiện tại của từng phiếu điều chuyển. Chỉ HQ API g
 | items | JSONB | NOT NULL | Danh sách hàng, ví dụ \[{"product\_id": 1, "qty": 50}\]; HQ ghi khi tạo phiếu |
 | cancel\_reason | VARCHAR(30) | CHECK IN ('DECLINED','INSUFFICIENT\_STOCK','TIMEOUT') | Lý do hủy; chỉ có giá trị khi status \= CANCELLED |
 | cancelled\_at | TIMESTAMPTZ |  | Thời điểm phiếu bị hủy |
-| last\_sync\_at | TIMESTAMPTZ |  | Lần gần nhất HQ gọi /sync-status cho hai kho |
+| last\_sync\_at | TIMESTAMPTZ |  | Lần gần nhất HQ gọi /sync-status và nhận 200. Kho có thể trả 200 khi bỏ qua, nên giá trị này không xác nhận trạng thái tại kho |
 | created\_at | TIMESTAMPTZ | NOT NULL | Thời điểm tạo phiếu |
 | shipped\_at | TIMESTAMPTZ |  | Thời điểm node nguồn xuất hàng |
 | received\_at | TIMESTAMPTZ |  | Thời điểm node đích xác nhận nhận |
@@ -257,7 +257,7 @@ CHECK (
 )
 ```
 
-Kho đích chỉ cho nhận hàng khi bản INBOUND đã SHIPPED; HQ đồng bộ trạng thái này qua /sync-status ngay sau khi kho nguồn xuất hàng. Nếu chưa SHIPPED, trả 409 INVALID\_STATE.
+Kho đích chỉ cho nhận hàng khi bản INBOUND đã SHIPPED. HQ đồng bộ qua /sync-status sau khi biết kho nguồn đã xuất và thử lại theo F10.c nếu bản INBOUND vẫn CREATED. Nếu chưa SHIPPED, trả 409 INVALID\_STATE.
 
 ### 2.10. Bảng transfer\_item (node DC)
 
@@ -362,7 +362,7 @@ Bốn quy tắc giữ trạng thái đúng:
 
 1. Ghi trước, gọi sau: HQ ghi phiếu CREATED vào transfer\_summary rồi mới gửi Transfer Notice tới hai kho. Nếu kho trả lỗi (trừ 422 ở kho nguồn) hoặc lệnh gọi vẫn lỗi mạng sau khi thử lại, HQ gọi /cancel cho kho nguồn (an toàn kể cả khi kho chưa nhận notice) và chỉ chuyển phiếu CANCELLED khi kho nguồn xác nhận. Nếu /cancel cũng lỗi, phiếu giữ CREATED để HQ hủy lại bằng nút Hủy phiếu khi kho liên lạc được; nhờ vậy kho nguồn không giữ chỗ mãi cho một phiếu đã hủy. Bản nộp không có tác vụ chạy nền tự gửi lại hay tự hủy theo thời gian (xem Giới hạn ở thẻ Tổng quan).  
 2. Trạng thái chỉ đi tới: lệnh cập nhật có điều kiện WHERE status \= trạng thái liền trước (CREATED trước SHIPPED, SHIPPED trước RECEIVED; CANCELLED chỉ từ CREATED). Callback trùng không cập nhật được dòng nào và được bỏ qua.  
-3. Một nơi ghi trạng thái: chỉ HQ API ghi transfer\_summary; kho báo HQ bằng callback HTTP (/shipped, /received). Callback lỗi thì kho trả 503 cho WMS để nhân viên bấm lại; bấm lại an toàn vì kho trả duplicate và gửi lại callback. Lịch sử được ghi theo quy tắc ở mục 2.13.  
+3. Chỉ HQ API ghi transfer\_summary. Kho báo HQ bằng /shipped hoặc /received. Nếu callback lỗi, kho trả 503 và thao tác bấm lại vẫn gửi lại callback an toàn nhờ duplicate. Với SHIPPED, HQ còn tự tiếp tục dựa trên trạng thái transfer\_summary và transfer\_order đã commit, theo F10.c. Lịch sử được ghi theo quy tắc ở mục 2.13.
 4. Kho nguồn quyết định việc hủy: mọi yêu cầu hủy (kho đích từ chối, quá thời gian chờ) đều đi qua HQ, và HQ gọi kho nguồn trước. Kho nguồn chỉ hủy khi bản OUTBOUND còn CREATED: nhả giữ chỗ, chuyển CANCELLED, trả 200\. Nếu đã SHIPPED, kho nguồn trả 409 INVALID\_STATE và HQ trả 409 cho bên yêu cầu: hàng đã rời kho nên kho đích phải nhận rồi tạo phiếu trả nếu cần. Chỉ khi kho nguồn đồng ý, HQ mới ghi CANCELLED vào transfer\_summary và đồng bộ xuống kho đích. Bước xuất hàng là bước then chốt (pivot) của Saga: trước nó mọi bước đều bù được; sau nó chỉ còn các bước đi tiếp, được thử lại tới khi thành công.
 
 Lệnh cập nhật trạng thái theo quy tắc 2:

@@ -6,7 +6,8 @@ trong cùng transaction, chỉ khi đổi được đúng một dòng. Không g�
 
 GIẢ ĐỊNH: /sync-status xuống kho chạy nền sau khi trả lời (FastAPI BackgroundTasks). Kho gọi
 /shipped, /received với timeout 2 giây (F5); nếu HQ chờ đồng bộ một kho đang chết (tới 18 giây)
-thì kho gửi lại liên tục. Đồng bộ lỗi thì callback gửi lại (trùng) đồng bộ lại (limitations.md).
+thì kho gửi lại liên tục. Callback trùng có thể đồng bộ lại ngay. Worker đối soát riêng tiếp tục
+chặng SHIPPED dựa trên trạng thái đã commit ở HQ và hai kho.
 """
 
 from __future__ import annotations
@@ -222,10 +223,12 @@ def node(request: Request, dc_id: int) -> InternalClient:
     return request.app.state.nodes[dc_id]
 
 
-async def call(client: InternalClient, path: str, body: Any) -> httpx.Response | None:
+async def call(
+    client: InternalClient, path: str, body: Any, *, max_retries: int | None = None
+) -> httpx.Response | None:
     """Gọi kho; None khi vẫn lỗi mạng sau khi thử lại (F5)."""
     try:
-        return await client.post(path, json=body)
+        return await client.post(path, json=body, max_retries=max_retries)
     except httpx.HTTPError as exc:
         log.warning("%s%s lỗi mạng sau khi thử lại: %r", client.base_url, path, exc)
         return None
@@ -253,15 +256,22 @@ def unreachable(dc_id: int, message: str) -> AppError:
 
 
 async def sync_status(
-    store: TransferStore, client: InternalClient, transfer_id: UUID, status: TransferStatus
+    store: TransferStore,
+    client: InternalClient,
+    transfer_id: UUID,
+    status: TransferStatus,
+    *,
+    max_retries: int | None = None,
 ) -> None:
     """HQ đồng bộ trạng thái phiếu xuống một kho (F6 /sync-status); chạy nền, lỗi chỉ ghi log."""
     resp = await call(
         client,
         f"/transfers/{transfer_id}/sync-status",
         SyncStatusRequest(status=status).model_dump(mode="json"),
+        max_retries=max_retries,
     )
     if resp is not None and resp.status_code == 200:
+        # F6: 200 cũng có thể là bỏ qua. last_sync_at chỉ ghi thời điểm gọi thành công.
         await store.mark_synced(transfer_id)
     else:
         log.warning("Đồng bộ %s phiếu %s xuống %s chưa được", status, transfer_id, client.base_url)
@@ -417,6 +427,19 @@ async def get_transfer(transfer_id: UUID, store: TransferStore = StoreDep) -> di
 # ---------------------------------------------------------------------------
 # Callback từ kho (F7, F9) và đồng bộ xuống kho còn lại
 # ---------------------------------------------------------------------------
+async def record_shipment(
+    store: TransferStore, transfer_id: UUID, from_dc_id: int, shipped_at: datetime
+) -> bool:
+    """Cả callback và worker dùng cùng một lần đổi trạng thái và ghi lịch sử."""
+    return await store.transition(
+        transfer_id,
+        TransferStatus.CREATED,
+        TransferStatus.SHIPPED,
+        TransferEventSource.for_dc(from_dc_id),
+        shipped_at=shipped_at,
+    )
+
+
 @router.post("/transfers/{transfer_id}/shipped", response_model=TransferStatusResponse)
 async def shipped(
     transfer_id: UUID,
@@ -427,13 +450,7 @@ async def shipped(
 ) -> TransferStatusResponse:
     """Kho nguồn báo đã xuất: CREATED -> SHIPPED, rồi đồng bộ SHIPPED xuống kho đích."""
     row = await load(store, transfer_id)
-    moved = await store.transition(
-        transfer_id,
-        TransferStatus.CREATED,
-        TransferStatus.SHIPPED,
-        TransferEventSource.for_dc(row["from_dc_id"]),
-        shipped_at=body.shipped_at,
-    )
+    moved = await record_shipment(store, transfer_id, row["from_dc_id"], body.shipped_at)
     status = (
         TransferStatus.SHIPPED
         if moved

@@ -177,7 +177,7 @@ Khởi động lại connector sau khi kho lên lại: POST http\://HOST\_A\_IP:
 | POST /replay | HQ | {"request\_id", "txn\_type": "OUTBOUND", "product\_id", "qty", "created\_by"} | 200 {"qty\_on\_hand", "duplicate"}; 422; nhận ở cả hai chế độ |
 | POST /recovery/complete | HQ |  | 200 {"mode": "ONLINE"} |
 
-Sau khi commit bước ship hoặc receive, Node API gọi HQ /shipped hoặc /received theo quy ước thử lại ở F5. Hết số lần thử thì trả 503 DC\_UNREACHABLE cho WMS; nhân viên bấm lại thao tác, kho trả duplicate và gửi lại callback.
+Sau khi commit bước ship hoặc receive, Node API gọi HQ /shipped hoặc /received theo quy ước thử lại ở F5. Hết số lần thử thì trả 503 DC\_UNREACHABLE cho WMS. Nhân viên có thể bấm lại cùng thao tác để kho trả duplicate và gửi lại callback. Chặng SHIPPED còn được HQ tự phục hồi theo F10.c.
 
 ## F7. API của HQ API
 
@@ -249,7 +249,7 @@ TransferCreated, TransferReceived, TransferCancelled dùng cùng cấu trúc v�
 | Từ | Sang | Kích hoạt bởi | Điều kiện |
 | :---- | :---- | :---- | :---- |
 | (chưa có) | CREATED | POST /transfers | Hai kho đều ONLINE |
-| CREATED | SHIPPED | /shipped từ kho nguồn | Trạng thái hiện tại đúng là trạng thái liền trước |
+| CREATED | SHIPPED | /shipped từ kho nguồn hoặc tác vụ phục hồi SHIPPED của HQ | Phiếu HQ còn CREATED. Tác vụ phục hồi xác nhận bản OUTBOUND đã xuất qua FDW |
 | SHIPPED | RECEIVED | /received từ kho đích | Trạng thái hiện tại đúng là trạng thái liền trước |
 | CREATED | CANCELLED | Kho nguồn trả 200 cho /cancel | Không có đường nào khác tới CANCELLED |
 
@@ -318,6 +318,8 @@ Ghi chú: inventory phải được cập nhật trước stock\_movement vì st
 1. UPDATE transfer\_order SET status \= 'SHIPPED', shipped\_at \= now() WHERE transfer\_id \= :id AND direction \= 'OUTBOUND' AND status \= 'CREATED'. Không cập nhật được: đã SHIPPED hoặc RECEIVED thì trả 200 duplicate và gửi lại callback /shipped; đã CANCELLED thì 409\.  
 2. Từng dòng: giảm qty\_on\_hand và qty\_reserved cùng một lượng (điều kiện version và qty\_reserved \>= số lượng xuất, thử lại tối đa 3 lần khi xung đột version); qty\_reserved không đủ thì ROLLBACK, trả 422 INSUFFICIENT\_STOCK; ghi stock\_movement TRANSFER\_OUT với request\_id tất định; đặt qty\_shipped \= qty\_requested.  
 3. Ghi InventoryChanged và TransferShipped, COMMIT, rồi gọi HQ /shipped.
+
+Tác vụ phục hồi SHIPPED ở HQ chạy mỗi 2 giây. Nếu phiếu HQ còn CREATED nhưng bản OUTBOUND qua FDW đã SHIPPED hoặc RECEIVED và có shipped\_at, HQ chuyển sang SHIPPED và ghi lịch sử trong cùng transaction như callback. Nếu phiếu HQ đã SHIPPED nhưng bản INBOUND qua FDW vẫn CREATED, HQ thử gửi /sync-status SHIPPED ngoài transaction. HTTP 200 có thể là bỏ qua, nên vòng sau đọc lại trạng thái thật ở kho đích. Các trạng thái đã commit đủ để tiếp tục sau khi HQ khởi động lại.
 
 ### d. Nhận điều chuyển tại kho đích (POST /transfers/{id}/receive)
 

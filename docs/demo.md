@@ -40,6 +40,8 @@ Bước 0 (tùy chọn), vì sao cần khóa: trên dữ liệu vừa reset, ch�
 
 Sau mỗi bước, chạy make check-invariant; cột Bất biến trong bảng dưới lấy từ kết quả của lệnh này.
 
+**Biến thể phục hồi SHIPPED (chỉ trên stack test riêng, bỏ qua bước 2).** Tạo phiếu Bắc → Nam 50 thùng và ghi lại transfer\_id. Dừng HQ API và Node API Nam, giữ các PostgreSQL chạy. Gọi /ship ở Bắc một lần. Sau 503, kiểm tra Bắc đã SHIPPED và có một dòng TRANSFER\_OUT trong khi HQ còn CREATED. Bật HQ để phiếu tự lên SHIPPED, rồi restart HQ khi Nam vẫn dừng. Bật lại Node API Nam và chờ bản INBOUND lên SHIPPED. Bấm Nhận một lần, kiểm tra theo cùng transfer\_id có đúng một TRANSFER\_OUT và một TRANSFER\_IN, cả ba bản RECEIVED, tồn Bắc 50 và Nam 60, make check-invariant trả DIFF \= 0.
+
 ### Kết quả mong đợi
 
 Số liệu đọc sau khi mỗi bước hoàn tất:

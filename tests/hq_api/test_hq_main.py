@@ -39,7 +39,12 @@ def test_node_clients_from_env(client: TestClient) -> None:
     nodes = client.app.state.nodes  # type: ignore[attr-defined]
     assert sorted(nodes) == [1, 2, 3]
     assert nodes[2].base_url.startswith("http://b:8002")
-    assert len(client.app.state.worker_tasks) == 2  # type: ignore[attr-defined]
+    tasks = client.app.state.worker_tasks  # type: ignore[attr-defined]
+    assert {task.get_name() for task in tasks} == {
+        "workers.health",
+        "workers.replay",
+        "workers.shipments",
+    }
 
 
 def test_parse_node_urls() -> None:

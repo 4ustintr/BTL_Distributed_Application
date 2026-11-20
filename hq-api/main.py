@@ -1,4 +1,4 @@
-"""HQ API (spec F2, F5, F7), kèm Health Monitor và Replay Worker chạy nền.
+"""HQ API (spec F2, F5, F7), kèm các worker chạy nền.
 
 Chạy: uvicorn main:app.
 """
@@ -16,7 +16,7 @@ import asyncpg
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers import dashboard, failover, invariant, transfers
-from workers import health, replay
+from workers import health, replay, shipments
 
 from common.constants import (
     CORS_ORIGIN_REGEX,
@@ -38,8 +38,8 @@ INTERNAL_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/transfers/{id}/received"),
 )
 
-# Worker nền khởi động cùng app (F2: hq-api kèm Health Monitor và Replay Worker)
-WORKERS = (health.run, replay.run)
+# Worker nền khởi động cùng app và dừng trước khi đóng pool/client.
+WORKERS = (health.run, replay.run, shipments.run)
 
 
 def parse_node_urls(raw: str) -> dict[int, str]:
