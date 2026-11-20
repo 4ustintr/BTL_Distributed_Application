@@ -90,9 +90,10 @@ class FailureResult:
 
 
 class HealthStore(Protocol):
-    async def record_success(self, dc_id: int, mode: NodeMode) -> DcStatus | None: ...
+    async def record_success(
+        self, dc_id: int, mode: NodeMode
+    ) -> tuple[DcStatus, DcStatus] | None: ...
     async def record_failure(self, dc_id: int) -> FailureResult | None: ...
-    async def has_pending(self, dc_id: int) -> bool: ...
     async def transition(
         self, dc_id: int, from_status: tuple[DcStatus, ...], to_status: DcStatus
     ) -> bool: ...
@@ -104,17 +105,37 @@ class PgHealthStore:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self.pool = pool
 
-    async def record_success(self, dc_id: int, mode: NodeMode) -> DcStatus | None:
-        """F10.j bước 2: missed_count = 0, ghi last_heartbeat_at và node_mode."""
-        status = await self.pool.fetchval(
-            """UPDATE dc_status
-               SET missed_count = 0, last_heartbeat_at = now(), node_mode = $2
-               WHERE dc_id = $1
-               RETURNING status""",
-            dc_id,
-            mode,
-        )
-        return None if status is None else DcStatus(status)
+    async def record_success(self, dc_id: int, mode: NodeMode) -> tuple[DcStatus, DcStatus] | None:
+        """F10.j bước 2: ghi heartbeat và chốt trạng thái trong cùng transaction."""
+        async with self.pool.acquire() as conn, conn.transaction(isolation="read_committed"):
+            # UPDATE lấy khóa mà /failover dùng. Câu SQL sau thấy lệnh đã commit khi chờ khóa.
+            status = await conn.fetchval(
+                """UPDATE dc_status
+                   SET missed_count = 0, last_heartbeat_at = now(), node_mode = $2
+                   WHERE dc_id = $1
+                   RETURNING status""",
+                dc_id,
+                mode,
+            )
+            if status is None:
+                return None
+            current = DcStatus(status)
+            has_pending = current == DcStatus.OFFLINE and await conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pending_txn WHERE dc_id = $1 AND status = $2)",
+                dc_id,
+                PendingTxnStatus.PENDING,
+            )
+            target = next_status_on_success(current, mode, has_pending)
+            if target is None:
+                return current, current
+            await conn.execute(
+                """UPDATE dc_status SET status = $3, updated_at = now()
+                   WHERE dc_id = $1 AND status = $2""",
+                dc_id,
+                current,
+                target,
+            )
+            return current, target
 
     async def record_failure(self, dc_id: int) -> FailureResult | None:
         """F10.j bước 3: tăng missed_count."""
@@ -129,15 +150,6 @@ class PgHealthStore:
         if row is None:
             return None
         return FailureResult(DcStatus(row["status"]), row["missed_count"])
-
-    async def has_pending(self, dc_id: int) -> bool:
-        return bool(
-            await self.pool.fetchval(
-                "SELECT EXISTS (SELECT 1 FROM pending_txn WHERE dc_id = $1 AND status = $2)",
-                dc_id,
-                PendingTxnStatus.PENDING,
-            )
-        )
 
     async def transition(
         self, dc_id: int, from_status: tuple[DcStatus, ...], to_status: DcStatus
@@ -178,13 +190,12 @@ class HealthMonitor:
             await self._on_success(dc_id, mode)
 
     async def _on_success(self, dc_id: int, mode: NodeMode) -> None:
-        current = await self.store.record_success(dc_id, mode)
-        if current is None:
+        result = await self.store.record_success(dc_id, mode)
+        if result is None:
             log.warning("Kho %s chưa có dòng dc_status (chưa chạy make seed?)", dc_id)
             return
-        has_pending = current == DcStatus.OFFLINE and await self.store.has_pending(dc_id)
-        target = next_status_on_success(current, mode, has_pending)
-        if target is not None and await self.store.transition(dc_id, (current,), target):
+        current, target = result
+        if target != current:
             log.info("Kho %s: %s -> %s (node_mode=%s)", dc_id, current, target, mode)
 
     async def _on_failure(self, dc_id: int) -> None:

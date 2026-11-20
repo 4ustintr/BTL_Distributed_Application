@@ -348,21 +348,21 @@ Ghi chú: inventory phải được cập nhật trước stock\_movement vì st
 ### h. Ghi hộ tại HQ (POST /failover/dc/{dc\_id}/…)
 
 1. Kiểm tra trùng: txn\_id (\= request\_id) đã có trong pending\_txn thì trả 200 kèm duplicate: true, trạng thái hiện tại của dòng đó và provisional\_qty tính lại tại thời điểm trả lời (inventory\_snapshot cộng các pending\_txn đang PENDING của kho đó, Thiết kế CSDL, mục 2.4); không kiểm tra dc\_status và không kiểm tra hạn mức lại.  
-2. dc\_status của kho khác OFFLINE thì trả 409 DC\_NOT\_OFFLINE.  
-3. Đọc inventory\_snapshot của (dc\_id, product\_id) và các pending\_txn đang PENDING của kho đó; demo chỉ có một người thao tác nên không khóa dòng (xem Giới hạn).  
+2. Khóa dòng dc\_status của kho đến khi kết thúc transaction. Kiểm tra trùng lại sau khi lấy khóa để thấy request\_id vừa commit. Nếu là lệnh mới và trạng thái khác OFFLINE thì trả 409 DC\_NOT\_OFFLINE.
+3. Sau khi lấy khóa, đọc inventory\_snapshot và các pending\_txn đang PENDING của (dc\_id, product\_id) trong cùng một câu SQL.
 4. Tính khả dụng tạm tính (Thiết kế CSDL, mục 2.4). Lệnh xuất không đủ thì ROLLBACK, trả 422\.  
-5. INSERT pending\_txn với txn\_id \= request\_id … ON CONFLICT (txn\_id) DO NOTHING, COMMIT, trả 200 kèm provisional\_qty.
+5. INSERT pending\_txn với txn\_id \= request\_id … ON CONFLICT (txn\_id) DO NOTHING. Ghi created\_at tại câu INSERT, sau khi lấy khóa. COMMIT, trả 200 kèm provisional\_qty.
 
 ### i. Replay Worker (mỗi 2 giây)
 
 1. Với mỗi kho đang RECOVERING, lấy các pending\_txn đang PENDING theo thứ tự created\_at.  
 2. Gửi lần lượt từng dòng tới /replay. Trả 200 thì sang dòng kế; nếu kèm duplicate: true thì chuyển thẳng APPLIED. Trả 422, hoặc 400 VALIDATION\_ERROR (dữ liệu lệnh sai, gửi lại vẫn sai, ví dụ SKU không có trong danh mục kho), thì chuyển REJECTED và ghi error\_msg. Lỗi mạng, 5xx và các 4xx khác (401, 409 VERSION\_CONFLICT) thì dừng vòng này, vòng sau gửi lại. Dòng đã gửi nhưng chưa APPLIED (đang chờ sự kiện CDC) sẽ được gửi lại ở vòng sau; việc này an toàn vì kho chặn trùng theo request\_id.  
-3. Khi kho không còn dòng PENDING nào, gọi /recovery/complete; trả 200 thì chuyển dc\_status sang ONLINE.
+3. Khi kho không còn dòng PENDING nào, gọi /recovery/complete ngoài transaction. Nếu trả 200, khóa dòng dc\_status của kho, rồi kiểm tra lại hàng đợi bằng câu SQL mới. Chỉ chuyển sang ONLINE nếu kho vẫn RECOVERING và hết PENDING.
 
 ### j. Health Monitor (mỗi 2 giây, cho từng kho)
 
 1. Gọi GET /health với timeout 1 giây.  
-2. Thành công: missed\_count \= 0, ghi last\_heartbeat\_at và node\_mode, rồi chuyển trạng thái theo bảng dc\_status ở mục F9.  
+2. Thành công: cập nhật missed\_count \= 0, last\_heartbeat\_at và node\_mode để lấy khóa dòng dc\_status của kho. Trong cùng transaction, nếu trạng thái là OFFLINE thì kiểm tra PENDING bằng câu SQL mới. Chuyển trạng thái theo mục F9 trước khi COMMIT.
 3. Thất bại: tăng missed\_count; khi đạt 3 và kho chưa OFFLINE thì chuyển OFFLINE, ghi updated\_at.
 
 ### k. Đối soát định kỳ (tùy chọn, mỗi 60 giây)

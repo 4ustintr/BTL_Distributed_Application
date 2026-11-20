@@ -13,7 +13,6 @@ Mỗi cơ chế dưới đây đã được thiết kế trong quá trình làm 
 | Cập nhật trạng thái phiếu qua CDC song song với HTTP | Hai đường ghi cần quy tắc thứ hạng và chống ghi trùng lịch sử | Callback lỗi thì nhân viên phải bấm lại thao tác | Consumer đọc outbox.event.TRANSFER, cập nhật transfer\_summary theo thứ hạng trạng thái; ghi transfer\_event chỉ khi UPDATE đổi đúng 1 dòng |
 | Kho đích hỏi lại HQ trước khi nhận hàng | HQ đã đồng bộ bằng /sync-status ngay sau khi kho nguồn xuất | Nếu /sync-status lỗi, kho đích phải chờ HQ đồng bộ lại mới nhận được hàng | Node API gọi GET /transfers/{id} trên HQ khi bản INBOUND chưa ở trạng thái cuối |
 | Kho tự chuyển ONLINE khi HQ chết | Cần quy tắc an toàn khi chưa biết còn giao dịch nhận hộ hay không | Khởi động kho lúc HQ chết thì phải gọi tay /recovery/complete | Kho gọi HQ GET /health trong lúc RECOVERING; 30 giây không gọi được thì tự ONLINE và ghi cảnh báo |
-| Khóa dòng khi HQ ghi hộ | Demo chỉ có một người thao tác | Hai lệnh xuất ghi hộ cùng lúc có thể cùng vượt kiểm tra tạm tính; lệnh thừa bị REJECTED khi đẩy lại | SELECT … FOR UPDATE trên inventory\_snapshot, hoặc pg\_advisory\_xact\_lock(dc\_id, product\_id) khi chưa có dòng |
 | Trigger ghi nhận sửa tay vào CSDL | Cần thêm trigger AFTER và biến phiên app.source | Sửa tay chỉ phát hiện được khi đối soát | Trigger AFTER INSERT OR UPDATE ghi dòng ADJUST (ref\_type DIRECT) và sự kiện InventoryChangedDirect khi app.source khác 'api' |
 | Đánh dấu đã giao khi replay | Gửi lại đã an toàn nhờ request\_id | Replay Worker gửi lặp vài lần trong lúc chờ CDC; không sai số | Thêm cột delivered\_at, chỉ gửi dòng chưa giao |
 | Đối soát định kỳ tự động | Nút Đối soát trên Dashboard đã đủ cho demo | Lệch số chỉ phát hiện khi bấm Đối soát | Tác vụ 60 giây so snapshot với số đọc qua FDW, ghi đè snapshot khi lệch (Đặc tả kỹ thuật, F10.k) |
@@ -31,7 +30,7 @@ Ngoài các cơ chế trên, kiến trúc còn những giới hạn chung, đã 
 
 ## 3\. Thứ tự phát triển đề xuất
 
-1. Khóa dòng khi ghi hộ và trigger ghi nhận sửa tay: ít code, tăng độ đúng ngay.  
+1. Trigger ghi nhận sửa tay để lưu cả dòng sổ và sự kiện khi cập nhật trực tiếp CSDL.
 2. Saga Recovery và cập nhật trạng thái phiếu qua CDC: phiếu không còn kẹt khi HQ hoặc mạng lỗi.  
 3. Kho tự chuyển ONLINE khi HQ chết và đối soát định kỳ: kho tự chủ hoàn toàn.  
 4. Nhân bản HQ (streaming replication kèm Patroni) và Kafka 3 broker: bỏ điểm lỗi duy nhất.  

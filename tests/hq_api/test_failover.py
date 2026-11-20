@@ -68,7 +68,7 @@ class FakeConn:
         self.db = db
 
     @contextlib.asynccontextmanager
-    async def transaction(self) -> AsyncIterator[None]:
+    async def transaction(self, *, isolation: str) -> AsyncIterator[None]:
         before = dict(self.db.pending)
         try:
             yield
@@ -84,6 +84,7 @@ class FakeConn:
             return 1 if args[0] in self.db.products else None
         if sql.lstrip().startswith("INSERT INTO pending_txn"):
             txn_id, dc_id, txn_type, product_id, qty, created_by = args
+            self.db.hidden_from_dup_check.discard(txn_id)
             if txn_id in self.db.pending:
                 return None  # ON CONFLICT (txn_id) DO NOTHING
             self.db.add(txn_id, TxnType(txn_type), qty, PendingTxnStatus.PENDING)
@@ -93,25 +94,24 @@ class FakeConn:
 
     async def fetchrow(self, sql: str, *args: Any) -> Any:
         self.db.sql.append(sql)
-        if "FROM inventory_snapshot" in sql:
-            return self.db.snapshot
         if "FROM pending_txn WHERE txn_id" in sql:
             txn_id = args[0]
             if txn_id in self.db.hidden_from_dup_check:
-                self.db.hidden_from_dup_check.discard(txn_id)
                 return None
             return self.db.pending.get(txn_id)
         raise AssertionError(f"SQL không mong đợi: {sql}")
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
         self.db.sql.append(sql)
-        assert "FROM pending_txn" in sql
+        assert "LEFT JOIN inventory_snapshot" in sql and "LEFT JOIN pending_txn" in sql
         dc_id, product_id, status = args
-        return [
-            r
+        snapshot = self.db.snapshot or {"qty_on_hand": 0, "qty_reserved": 0}
+        rows = [
+            {**snapshot, "txn_type": r["txn_type"], "qty": r["qty"]}
             for r in self.db.rows()
             if (r["dc_id"], r["product_id"], r["status"]) == (dc_id, product_id, status)
         ]
+        return rows or [{**snapshot, "txn_type": None, "qty": None}]
 
 
 class FakePool:

@@ -35,22 +35,20 @@ async def read_provisional(
 
     Chưa có dòng snapshot (kho chưa từng phát sự kiện) thì coi tồn 0 (Minh Danh chốt mục 13).
     """
-    snapshot = await conn.fetchrow(
-        """SELECT qty_on_hand, qty_reserved FROM inventory_snapshot
-           WHERE dc_id = $1 AND product_id = $2""",
-        dc_id,
-        product_id,
-    )
-    pending = await conn.fetch(
-        """SELECT txn_type, qty FROM pending_txn
-           WHERE dc_id = $1 AND product_id = $2 AND status = $3""",
+    # Consumer đổi snapshot và trạng thái PENDING cùng lúc; đọc cả hai trong một câu SQL.
+    rows = await conn.fetch(
+        """SELECT COALESCE(s.qty_on_hand, 0) AS qty_on_hand,
+                  COALESCE(s.qty_reserved, 0) AS qty_reserved, p.txn_type, p.qty
+           FROM (VALUES ($1::smallint, $2::bigint)) AS sku(dc_id, product_id)
+           LEFT JOIN inventory_snapshot s USING (dc_id, product_id)
+           LEFT JOIN pending_txn p
+             ON p.dc_id = sku.dc_id AND p.product_id = sku.product_id AND p.status = $3""",
         dc_id,
         product_id,
         PendingTxnStatus.PENDING,
     )
-    on_hand = snapshot["qty_on_hand"] if snapshot else 0
-    reserved = snapshot["qty_reserved"] if snapshot else 0
-    return provisional_on_hand(on_hand, pending), reserved
+    pending = (row for row in rows if row["qty"] is not None)
+    return provisional_on_hand(rows[0]["qty_on_hand"], pending), rows[0]["qty_reserved"]
 
 
 async def duplicate_response(conn: asyncpg.Connection, txn_id: UUID) -> FailoverResponse | None:
@@ -76,14 +74,22 @@ async def record_pending(
     pool: asyncpg.Pool, dc_id: int, txn_type: TxnType, body: FailoverRequest
 ) -> FailoverResponse:
     """F10.h, đúng thứ tự 5 bước, trong một transaction."""
-    async with pool.acquire() as conn, conn.transaction():
+    async with pool.acquire() as conn, conn.transaction(isolation="read_committed"):
         # Bước 1: kiểm tra trùng txn_id (= request_id) trước mọi kiểm tra khác
         duplicate = await duplicate_response(conn, body.request_id)
         if duplicate is not None:
             return duplicate
 
+        # Cùng khóa dòng với Health Monitor, giữ tới lúc giao dịch nhận hộ kết thúc.
+        status = await conn.fetchval(
+            "SELECT status FROM dc_status WHERE dc_id = $1 FOR UPDATE", dc_id
+        )
+        # Lệnh cùng mã có thể đã commit trong lúc chờ khóa, kể cả khi kho đã đổi trạng thái.
+        duplicate = await duplicate_response(conn, body.request_id)
+        if duplicate is not None:
+            return duplicate
+
         # Bước 2: dc_status khác OFFLINE thì 409 DC_NOT_OFFLINE
-        status = await conn.fetchval("SELECT status FROM dc_status WHERE dc_id = $1", dc_id)
         if status is None:  # dc_id lạ -> 400 (Minh Danh chốt mục 13)
             raise AppError(ErrorCode.VALIDATION_ERROR, "Không có kho", {"dc_id": dc_id})
         if status != DcStatus.OFFLINE:
@@ -93,7 +99,7 @@ async def record_pending(
                 {"dc_id": dc_id, "status": status},
             )
 
-        # Bước 3: đọc inventory_snapshot và pending_txn PENDING của kho; không khóa dòng
+        # Bước 3: đọc tồn tạm sau khi lấy được khóa, thấy các lệnh đã commit trước đó.
         if not await conn.fetchval("SELECT 1 FROM product WHERE product_id = $1", body.product_id):
             # F5: lệnh ghi có SKU trong body không tồn tại -> 400 VALIDATION_ERROR
             raise AppError(
@@ -117,8 +123,9 @@ async def record_pending(
 
         # Bước 5: INSERT ... ON CONFLICT (txn_id) DO NOTHING, rồi COMMIT
         inserted = await conn.fetchval(
-            """INSERT INTO pending_txn (txn_id, dc_id, txn_type, product_id, qty, created_by)
-               VALUES ($1, $2, $3, $4, $5, $6)
+            """INSERT INTO pending_txn
+                   (txn_id, dc_id, txn_type, product_id, qty, created_by, created_at)
+               VALUES ($1, $2, $3, $4, $5, $6, statement_timestamp())
                ON CONFLICT (txn_id) DO NOTHING
                RETURNING status""",
             body.request_id,

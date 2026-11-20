@@ -37,13 +37,18 @@ class FakeHealthStore:
         self.rows = rows
         self.pending = pending or set()
 
-    async def record_success(self, dc_id: int, mode: NodeMode) -> DcStatus | None:
+    async def record_success(self, dc_id: int, mode: NodeMode) -> tuple[DcStatus, DcStatus] | None:
         row = self.rows.get(dc_id)
         if row is None:
             return None
         row.missed_count, row.node_mode = 0, mode
         row.heartbeats += 1
-        return row.status
+        current = row.status
+        target = next_status_on_success(current, mode, dc_id in self.pending)
+        if target is None:
+            return current, current
+        await self.transition(dc_id, (current,), target)
+        return current, target
 
     async def record_failure(self, dc_id: int) -> FailureResult | None:
         row = self.rows.get(dc_id)
@@ -51,9 +56,6 @@ class FakeHealthStore:
             return None
         row.missed_count += 1
         return FailureResult(row.status, row.missed_count)
-
-    async def has_pending(self, dc_id: int) -> bool:
-        return dc_id in self.pending
 
     async def transition(
         self, dc_id: int, from_status: tuple[DcStatus, ...], to_status: DcStatus

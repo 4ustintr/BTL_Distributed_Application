@@ -178,16 +178,25 @@ class PgReplayStore:
         )
 
     async def set_online(self, dc_id: int) -> bool:
-        """F9: RECOVERING -> ONLINE. Kiểm tra lại "không còn PENDING" ngay trong lệnh UPDATE."""
-        result = await self.pool.execute(
-            """UPDATE dc_status SET status = $2, updated_at = now()
-               WHERE dc_id = $1 AND status = $3
-                 AND NOT EXISTS (SELECT 1 FROM pending_txn WHERE dc_id = $1 AND status = $4)""",
-            dc_id,
-            DcStatus.ONLINE,
-            DcStatus.RECOVERING,
-            PendingTxnStatus.PENDING,
-        )
+        """F9: RECOVERING -> ONLINE nếu hàng đợi vẫn rỗng sau khi lấy khóa."""
+        async with self.pool.acquire() as conn, conn.transaction(isolation="read_committed"):
+            recovering = await conn.fetchval(
+                "SELECT 1 FROM dc_status WHERE dc_id = $1 AND status = $2 FOR UPDATE",
+                dc_id,
+                DcStatus.RECOVERING,
+            )
+            if recovering is None:
+                return False
+            # Câu SQL mới thấy cả lệnh đã commit trong lúc chờ khóa qua một đợt OFFLINE khác.
+            result = await conn.execute(
+                """UPDATE dc_status SET status = $2, updated_at = now()
+                   WHERE dc_id = $1 AND status = $3
+                     AND NOT EXISTS (SELECT 1 FROM pending_txn WHERE dc_id = $1 AND status = $4)""",
+                dc_id,
+                DcStatus.ONLINE,
+                DcStatus.RECOVERING,
+                PendingTxnStatus.PENDING,
+            )
         return result == "UPDATE 1"
 
 
